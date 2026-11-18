@@ -7,6 +7,7 @@ import time
 from datetime import datetime
 
 from .models import Profile, validated_steps
+from .locks import ProfileLease
 from .secrets import get_password
 from .storage import Store
 
@@ -73,6 +74,18 @@ class BrowserManager:
                 self._cancel[profile_id].set()
 
     def _run(self, profile: Profile, cmds: queue.Queue, cancel: threading.Event) -> None:
+        try:
+            with ProfileLease(self.store.base, profile.id):
+                self._run_session(profile, cmds, cancel)
+        except Exception as exc:
+            self.events.put((profile.id, "error", self._safe_error(exc, "")))
+            with self._lock:
+                self._workers.pop(profile.id, None)
+                self._active.discard(profile.id)
+                self._cancel.pop(profile.id, None)
+            self.events.put((profile.id, "status", "Stopped"))
+
+    def _run_session(self, profile: Profile, cmds: queue.Queue, cancel: threading.Event) -> None:
         pid = profile.id
         password = ""
         try:

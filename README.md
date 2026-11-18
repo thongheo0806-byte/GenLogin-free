@@ -2,9 +2,11 @@
 
 **Free, local-first browser profile studio for Windows**. This is an independent open-source implementation inspired by the *category* of browser profile managers. **Not affiliated with GenLogin; not a clone of its proprietary browser engine.**
 
-**Project status: v0.2.0 foundation.** The source code and Windows build workflow are included. The EXE is built by GitHub Actions on a Windows runner. No prebuilt or Windows-tested executable is claimed until that workflow passes.
+**Project status: v0.3.0 foundation.** The source code and Windows build workflow are included. The EXE is built by GitHub Actions on a Windows runner. No prebuilt or Windows-tested executable is claimed until that workflow passes.
 
 ## Current features
+
+**New in v0.3:** Cross-process profile locking to guard against concurrent use of one browser data folder; refuses deletion of profiles still open in another process. A read-only, offline Diagnostics command and GUI button check SQLite health, disk space and orphaned browser folders without reading browser sessions or network access.
 
 - Create, edit, clone, group, tag, search, import and export browser profile **metadata**.
 - Launch independent Chrome/Edge/Playwright Chromium sessions with distinct persistent `user_data_dir` folders (cookies, history and sessions isolated by directory).
@@ -97,13 +99,15 @@ Also available: `POST /v1/profiles/{id}/stop`, `POST /v1/profiles/{id}/cancel`, 
 ```powershell
 python -m unittest discover -s tests -v
 python main.py --self-check
+python main.py --doctor
+python main.py --doctor-json
 ```
 
-Unit tests cover profile validation, CRUD/export/import/backup, flow validation and loopback API authorization/error cases. They do **not** yet establish actual GUI usability, Windows proxy compatibility, fingerprint equivalence, browser crash recovery, or signed release provenance.
+Unit tests cover profile validation, CRUD/export/import/backup, OS profile locking, offline diagnostics, flow validation and loopback API authorization/error cases. They do **not** yet establish actual GUI usability, Windows proxy compatibility, fingerprint equivalence, browser crash recovery, or signed release provenance.
 
 ## Comparison to GenLogin
 
-| Feature | This repo v0.2.0 | Status |
+| Feature | This repo v0.3.0 | Status |
 |---|---|---|
 | Persistent browser profile separation | Independent per-profile Chromium data dir | Implemented, platform QA pending |
 | Profile manager, tags, groups, search, clone | Local SQLite + UI | Implemented |
@@ -119,7 +123,7 @@ Unit tests cover profile validation, CRUD/export/import/backup, flow validation 
 
 **No anti-detection guarantee:** IP, browser configuration and profile separation do not imply immunity to platform security systems. Use with sites you are authorized to access and comply with their terms. This repo does not implement CAPTCHA bypass, account farming or platform evasion.
 
-For design evidence, known gaps and priorities see [`docs/FEATURE_MATRIX.md`](docs/FEATURE_MATRIX.md), [`docs/ROADMAP.md`](docs/ROADMAP.md) and [`docs/REA_EVIDENCE.md`](docs/REA_EVIDENCE.md).
+For public-source feature comparisons and Sybil limitations, see [`docs/GENLOGIN_TITAN_ASSESSMENT.md`](docs/GENLOGIN_TITAN_ASSESSMENT.md). For design evidence, known gaps and priorities see [`docs/FEATURE_MATRIX.md`](docs/FEATURE_MATRIX.md), [`docs/ROADMAP.md`](docs/ROADMAP.md) and [`docs/REA_EVIDENCE.md`](docs/REA_EVIDENCE.md).
 
 ## Acknowledgements and license
 
@@ -128,11 +132,3 @@ For design evidence, known gaps and priorities see [`docs/FEATURE_MATRIX.md`](do
 - Licensed **MIT** for AutumnGenLogin original source. Dependencies retain their respective licenses.
 
 **GenLogin** is a third-party product and brand. AutumnGenLogin does not use its source code, internal APIs, artwork, logos or proprietary fingerprints.
-
-## Verified Windows build (2026-11-18)
-
-- [GitHub Actions run #44230909046](https://github.com/thongheo0806-byte/GenLogin-free/actions/runs/44230909046): **success** on `windows-latest` using Python 3.12.
-- Unit tests: **16 passed** on the Windows runner.
-- Packaging: PyInstaller x64 executable `AutumnGenLogin.exe` (59,115,249 bytes). The packaged `--self-check` returned exit code 0.
-- Artifact: `AutumnGenLogin-Windows-x64` (available via the run page for the artifact retention window).
-- Important: CI smoke tests verify packaging and database bootstrapping, **not** manual GUI usability, real proxy routing, browser fingerprint parity, or compatibility with all installed Chrome/Edge versions.

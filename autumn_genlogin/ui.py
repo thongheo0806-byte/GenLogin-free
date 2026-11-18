@@ -9,6 +9,7 @@ from tkinter import filedialog, messagebox, ttk
 
 from .api import LocalAPI
 from .browser import BrowserManager
+from .diagnostics import audit_store
 from .models import Profile, validated_steps
 from .secrets import delete_password, set_password
 from .storage import Store
@@ -162,6 +163,7 @@ class App:
         ttk.Label(title_box, text="Local-first · Separate browser profiles · No subscription required", style="Muted.TLabel").pack(anchor="w", pady=(2, 0))
         ttk.Button(top, text="API: OFF", command=self.toggle_api).pack(side="right", padx=(10, 0))
         self.api_button = top.winfo_children()[-1]
+        ttk.Button(top, text="Diagnostics", command=self.show_diagnostics).pack(side="right", padx=(10, 0))
         ttk.Button(top, text="Export metadata", command=self.export_profiles).pack(side="right", padx=(10, 0))
         ttk.Button(top, text="Import metadata", command=self.import_profiles).pack(side="right")
         tabs = ttk.Notebook(page)
@@ -213,7 +215,7 @@ class App:
         bottom = ttk.Frame(page)
         bottom.pack(fill="x", pady=(12, 0))
         ttk.Label(bottom, textvariable=self.status, foreground=MUTED).pack(side="left")
-        ttk.Label(bottom, text="v0.2.0  ·  PRIVATE BY DEFAULT", foreground=ACCENT).pack(side="right")
+        ttk.Label(bottom, text="v0.3.0  ·  PRIVATE BY DEFAULT", foreground=ACCENT).pack(side="right")
 
     def selected_id(self, alert=True):
         selected = self.tree.selection()
@@ -319,6 +321,15 @@ class App:
                 self.notice("Deleted " + p.name)
             except Exception as exc:
                 messagebox.showerror("Delete error", str(exc))
+
+    def show_diagnostics(self):
+        report = audit_store(self.store)
+        lines = [f"{item['status'].upper():4}  {item['name']}: {item['detail']}"
+                 for item in report["checks"]]
+        summary = report["summary"]
+        messagebox.showinfo("AutumnGenLogin diagnostics",
+                            "\n".join(lines) + "\n\n" + str(summary), parent=self.root)
+        self.notice(f"Diagnostics: {summary['failed']} failures, {summary['warnings']} warnings")
 
     def export_profiles(self):
         path = filedialog.asksaveasfilename(defaultextension=".json", filetypes=[("JSON", "*.json")], initialfile="autumn-profiles.json")

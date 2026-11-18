@@ -16,3 +16,10 @@
 - The GitHub Actions self-check covers packaged module import and local DB, **not** an interactive browser launch or platform leak audit.
 - No cloud data loss recovery, sync encryption, automated secret backups or security certification.
 - There is no password to open the main app. Anyone with access to the logged-in Windows session may operate its profiles.
+
+## v0.3 operational safeguards
+
+- Each browser profile now obtains an OS-backed, non-blocking lock before opening a persistent user-data directory. Deletion attempts acquire the same lock; they are refused while the profile is in use. Lock files persist intentionally to avoid unlink/recreate races.
+- Diagnostics use local SQLite `PRAGMA quick_check`, write-access checks and orphan-directory reporting. They do not request websites or read browser cookies/history. The tool never deletes suspected orphan data.
+- Run `python main.py --doctor` or `python main.py --doctor-json` for a local, offline report; GUI has a **Diagnostics** button. Reports contain no proxy usernames or passwords.
+- This prototype is not an anonymity suite and does not bypass Sybil, anti-bot, CAPTCHA, KYC or terms-of-service enforcement. No such outcome can be guaranteed.

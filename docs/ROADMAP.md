@@ -10,10 +10,17 @@
 - [x] Source test suite + GitHub Actions build recipe
 - [ ] Successful Windows release build and interactive UI/manual browser QA (**not yet verified**)
 
+## v0.3: operational reliability (implemented)
+
+- [x] Cross-process OS profile leases for browser launch and deletion
+- [x] Offline SQLite integrity, write access, disk capacity, orphaned-data diagnostics
+- [x] GUI Diagnostics button, JSON/CLI diagnostics and regression tests
+- [ ] Interactive Windows browser/proxy failure testing still required
+
 ## v0.2: quality and browser operations
 
 - [ ] Live browser smoke tests using installed Chrome/Edge on Windows
-- [ ] Browser launch diagnosis and crash recovery
+- [x] Offline launch/storage diagnosis; [ ] full interactive crash recovery
 - [ ] Proxy validation and explicit WebRTC/DNS leak diagnostics (no guarantees)
 - [ ] Extension install/disable management and profile templates
 - [ ] Bulk create/edit/delete, advanced filtering, tag taxonomy and CSV import

@@ -11,6 +11,7 @@ from pathlib import Path
 from uuid import UUID, uuid4
 
 from .models import Profile
+from .locks import ProfileLease
 
 
 def data_home() -> Path:
@@ -99,13 +100,14 @@ class Store:
     def delete(self, profile_id: str) -> None:
         profile_id = str(UUID(profile_id))
         self.get(profile_id)
-        # Delete user data first; if deletion fails, keep the metadata so the
-        # user can retry rather than silently leaving orphaned cookies behind.
-        for directory in (self.profile_path(profile_id), self.shot_dir / profile_id):
-            if directory.exists():
-                shutil.rmtree(directory)
-        with self._connect() as c:
-            c.execute("DELETE FROM profiles WHERE id = ?", (profile_id,))
+        # Hold the OS lock while removing data. Cross-process browser access
+        # must not race with deletion. Never remove the lock file itself.
+        with ProfileLease(self.base, profile_id):
+            for directory in (self.profile_path(profile_id), self.shot_dir / profile_id):
+                if directory.exists():
+                    shutil.rmtree(directory)
+            with self._connect() as c:
+                c.execute("DELETE FROM profiles WHERE id = ?", (profile_id,))
 
     def export_metadata(self, target: Path) -> int:
         profiles = [p.public_dict() for p in self.all()]

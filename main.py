@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import sys
+import json
 
 
 def self_check() -> int:
@@ -26,7 +27,22 @@ def self_check() -> int:
         return 1
 
 
+def doctor() -> int:
+    from autumn_genlogin.storage import Store
+    from autumn_genlogin.diagnostics import audit_store
+    report = audit_store(Store())
+    if "--doctor-json" in sys.argv:
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+    else:
+        for item in report["checks"]:
+            print(f"{item['status'].upper():4} {item['name']}: {item['detail']}")
+        print("Summary:", report["summary"])
+    return 1 if report["summary"]["failed"] else 0
+
+
 def main() -> int:
+    if "--doctor" in sys.argv or "--doctor-json" in sys.argv:
+        return doctor()
     if "--self-check" in sys.argv:
         return self_check()
     import tkinter as tk
