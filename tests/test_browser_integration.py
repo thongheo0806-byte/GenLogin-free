@@ -70,5 +70,38 @@ class BrowserIntegrationTests(unittest.TestCase):
 
 
 
+    def test_real_chromium_loads_opt_in_mv3_extension(self):
+        import json
+        from playwright.sync_api import sync_playwright
+        from autumn_genlogin.extensions import ExtensionLibrary
+        from autumn_genlogin.models import Profile
+        from autumn_genlogin.storage import Store
+        with tempfile.TemporaryDirectory() as base:
+            root = Path(base)
+            store = Store(root / "app")
+            profile = store.save(Profile(name="extension fixture", browser="chromium"))
+            source = root / "extension"
+            source.mkdir()
+            (source / "manifest.json").write_text(json.dumps({
+                "manifest_version": 3, "name": "Local fixture extension", "version": "0.1.0",
+                "background": {"service_worker": "worker.js"}
+            }))
+            (source / "worker.js").write_text("chrome.runtime.onInstalled.addListener(() => {});")
+            library = ExtensionLibrary(store)
+            extension = library.install_folder(source)
+            library.attach(profile.id, extension.id)
+            [extension_path] = library.paths_for(profile.id)
+            with sync_playwright() as pw:
+                context = pw.chromium.launch_persistent_context(
+                    str(store.profile_path(profile.id)), channel="chromium", headless=True,
+                    args=[f"--disable-extensions-except={extension_path}", f"--load-extension={extension_path}"])
+                try:
+                    workers = context.service_workers
+                    worker = workers[0] if workers else context.wait_for_event("serviceworker", timeout=15000)
+                    self.assertTrue(worker.url.startswith("chrome-extension://"))
+                finally:
+                    context.close()
+
+
 if __name__ == "__main__":
     unittest.main()

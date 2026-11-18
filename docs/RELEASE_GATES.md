@@ -40,8 +40,8 @@ Assessment baseline: 2026-11-18. See `FEATURE_MATRIX.md` and `GENLOGIN_TITAN_ASS
 - [ ] Tests for every feature, including negative paths and data migration.
 - [ ] Windows headless Chromium isolation test **passed** on current head; a defined test exists but still requires CI results.
 - [ ] Windows headed actual Chrome, Edge and bundled Chromium tests on a fresh VM.
-- [ ] Locally installed benign extension launch test with observed service worker and permissions.
-- [ ] GUI interaction smoke / screenshot comparison / usability acceptance.
+- [ ] Locally installed benign extension launch test with observed service worker and permissions (test added; Windows CI result pending).
+- [ ] GUI interaction smoke / screenshot comparison / usability acceptance (structural Tkinter smoke test added; CI result pending).
 - [ ] Concurrency, storage corruption, disk-full, emergency shutdown, proxy failure and application reinstall.
 
 ## Release decision

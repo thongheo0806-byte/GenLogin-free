@@ -21,6 +21,10 @@ jobs:
         run: python -m unittest discover -s tests -v
       - name: Application self-check
         run: python main.py --self-check
+      - name: Tkinter UI structural smoke
+        env:
+          AUTUMN_GUI_SMOKE: '1'
+        run: python -m unittest discover -s tests -p "test_gui_smoke.py" -v
   browser-integration:
     runs-on: windows-latest
     steps:
