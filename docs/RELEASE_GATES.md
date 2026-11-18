@@ -38,10 +38,11 @@ Assessment baseline: 2026-11-18. See `FEATURE_MATRIX.md` and `GENLOGIN_TITAN_ASS
 ## Gate D: real test execution
 
 - [ ] Tests for every feature, including negative paths and data migration.
-- [ ] Windows headless Chromium isolation test **passed** on current head; a defined test exists but still requires CI results.
+- [x] Windows headless Chromium profile isolation and persistence test passed on development commit `08e2516ea7d4` (CI `44235696630`).
 - [ ] Windows headed actual Chrome, Edge and bundled Chromium tests on a fresh VM.
-- [ ] Locally installed benign extension launch test with observed service worker and permissions (test added; Windows CI result pending).
-- [ ] GUI interaction smoke / screenshot comparison / usability acceptance (structural Tkinter smoke test added; CI result pending).
+- [x] Windows headless Playwright Chromium loaded a benign local MV3 extension and observed the service worker (CI `44235696630`). This does not validate arbitrary extensions.
+- [x] Windows Tkinter structural smoke for profile, extension and workflow tab instantiation (CI `44235696630`).
+- [ ] Full GUI interaction smoke, screenshots, keyboard/a11y and usability acceptance.
 - [ ] Concurrency, storage corruption, disk-full, emergency shutdown, proxy failure and application reinstall.
 
 ## Release decision

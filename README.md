@@ -1,12 +1,14 @@
 # AutumnGenLogin 🌙
 
+> **RELEASE HOLD as of 2026-11-18:** This repository contains **development source**, not a verified GenLogin-parity release. No EXE will be built or released until the [release gates](docs/RELEASE_GATES.md) have passed. The CI workflow deliberately performs tests only. Historical EXEs are not parity-certified.
+
 **Free, local-first browser profile studio for Windows**. This is an independent open-source implementation inspired by the *category* of browser profile managers. **Not affiliated with GenLogin; not a clone of its proprietary browser engine.**
 
-**Project status: v0.3.0 foundation.** The source code and Windows build workflow are included. The EXE is built by GitHub Actions on a Windows runner. No prebuilt or Windows-tested executable is claimed until that workflow passes.
+**Project status: v0.4.1-dev, incomplete feature parity.** This development branch adds a sequential visual workflow builder, opt-in local Manifest V3 extensions for Playwright Chromium, and Windows browser/GUI integration tests. The release build is disabled; a passing test is not an approval to ship.
 
 ## Current features
 
-**New in v0.3:** Cross-process profile locking to guard against concurrent use of one browser data folder; refuses deletion of profiles still open in another process. A read-only, offline Diagnostics command and GUI button check SQLite health, disk space and orphaned browser folders without reading browser sessions or network access.
+**Reliability changes since v0.3:** Cross-process profile locking to guard against concurrent use of one browser data folder; refuses deletion of profiles still open in another process. A read-only, offline Diagnostics command and GUI button check SQLite health, disk space and orphaned browser folders without reading browser sessions or network access.
 
 - Create, edit, clone, group, tag, search, import and export browser profile **metadata**.
 - Launch independent Chrome/Edge/Playwright Chromium sessions with distinct persistent `user_data_dir` folders (cookies, history and sessions isolated by directory).
@@ -34,23 +36,13 @@
 4. Click **+ New profile**, choose `chrome` or `msedge`, save the profile, select it and click **Open**.
 5. To use browser engine `chromium` instead, install Playwright's browser separately: `python -m playwright install chromium` (in the same Python environment). **The bundled single-file EXE does not include a Chromium browser**; Chrome/Edge installed on the computer is the recommended mode.
 
-## Getting AutumnGenLogin.exe
+## EXE release is disabled pending feature parity
 
-1. Push these project files to the `main` branch of your GitHub repository, including the hidden `.github/workflows/windows-build.yml` folder.
-2. Open **Actions → Test and build AutumnGenLogin Windows EXE → Run workflow** (or wait for a push-triggered run).
-3. Once the run succeeds, download **AutumnGenLogin-Windows-x64** from the **Artifacts** section.
-4. Extract the ZIP to obtain `AutumnGenLogin.exe`. Run on Windows with installed Chrome/Edge.
+The user requires a **demonstrated GenLogin-equivalent application** before any new executable is built. The `main` GitHub Actions workflow runs unit tests, application self-checks, Tkinter UI smoke checks, and a real Chromium isolation and benign extension test. It deliberately has **no EXE packaging job**.
 
-If GitHub integration cannot write to the repo, you may use `PUBLISH-TO-GITHUB.ps1` on Windows to publish the sources from your own Git login; it requires an explicit `PUBLISH` confirmation and never force-pushes.
+`BUILD-EXE-WINDOWS.cmd` is a deliberately blocked release entrypoint. Do not re-enable packaging until the version-specific [release gates](docs/RELEASE_GATES.md), [feature matrix](docs/FEATURE_MATRIX.md) and [engine/legal checklist](docs/ENGINE_LICENSING.md) are met.
 
-Alternatively, double-click `BUILD-EXE-WINDOWS.cmd` or build locally on Windows:
-
-```powershell
-python -m pip install -r requirements-build.txt
-pyinstaller --clean --noconfirm --onefile --windowed --name AutumnGenLogin --collect-all playwright --collect-all keyring main.py
-```
-
-**Important:** GitHub Actions artifacts are not the same as GitHub Releases. This project does not yet publish versioned releases or digitally sign EXEs. Windows SmartScreen may warn for unsigned binaries. Review the source and verify the GitHub Actions run before trusting the executable.
+You may continue evaluating the Python source locally via `START-WINDOWS.cmd`, but this is development testing, not a parity release.
 
 ## Data locations and privacy
 
