@@ -10,6 +10,7 @@ from tkinter import filedialog, messagebox, ttk
 from .api import LocalAPI
 from .browser import BrowserManager
 from .diagnostics import audit_store
+from .visual_workflow import WorkflowBuilder
 from .models import Profile, validated_steps
 from .secrets import delete_password, set_password
 from .storage import Store
@@ -116,6 +117,7 @@ class App:
         self.root = root
         self.store = Store()
         self.manager = BrowserManager(self.store)
+        self.extensions = self.manager.extensions
         self.api = LocalAPI(self.store, self.manager)
         self.root.title("AutumnGenLogin  |  Local Browser Studio")
         self.root.geometry("1230x780")
@@ -168,9 +170,10 @@ class App:
         ttk.Button(top, text="Import metadata", command=self.import_profiles).pack(side="right")
         tabs = ttk.Notebook(page)
         tabs.pack(fill="both", expand=True)
-        profile_tab, flow_tab, logs_tab = (ttk.Frame(tabs, padding=(0, 16)) for _ in range(3))
+        profile_tab, flow_tab, extensions_tab, logs_tab = (ttk.Frame(tabs, padding=(0, 16)) for _ in range(4))
         tabs.add(profile_tab, text="  Profiles  ")
         tabs.add(flow_tab, text="  Automation  ")
+        tabs.add(extensions_tab, text="  Extensions  ")
         tabs.add(logs_tab, text="  Activity log  ")
         controls = ttk.Frame(profile_tab)
         controls.pack(fill="x", pady=(0, 13))
@@ -202,20 +205,48 @@ class App:
         ttk.Label(profile_tab, text="Profiles keep cookies and browsing data in separate local folders. Proxy credentials stay in the OS vault.", style="Muted.TLabel").pack(anchor="w", pady=(12, 0))
         flow_header = ttk.Frame(flow_tab)
         flow_header.pack(fill="x", pady=(0, 10))
-        ttk.Label(flow_header, text="JSON automation workflow", style="Heading.TLabel").pack(side="left")
-        for title, action in (("Load JSON", self.load_workflow), ("Save JSON", self.save_workflow), ("Run on selected profile", self.run_workflow), ("Cancel", self.cancel_workflow)):
+        ttk.Label(flow_header, text="Workflow automation", style="Heading.TLabel").pack(side="left")
+        for title, action in (("Load JSON", self.load_workflow), ("Save JSON", self.save_workflow),
+                              ("Run on selected profile", self.run_workflow), ("Cancel", self.cancel_workflow)):
             ttk.Button(flow_header, text=title, command=action).pack(side="right", padx=(8, 0))
-        ttk.Label(flow_tab, text="Supported: goto, click, fill, press, check, uncheck, select_option, scroll_into_view, wait, wait_for, screenshot, extract_text.", style="Muted.TLabel").pack(anchor="w", pady=(0, 10))
-        self.workflow = tk.Text(flow_tab, font=("Cascadia Code", 11), bg=PANEL, fg=FG, insertbackground=FG, relief="flat", undo=True, padx=17, pady=16, wrap="none")
+        self.flow_tabs = ttk.Notebook(flow_tab)
+        self.flow_tabs.pack(fill="both", expand=True)
+        visual_panel = ttk.Frame(self.flow_tabs, padding=12)
+        json_panel = ttk.Frame(self.flow_tabs, padding=12)
+        self.flow_tabs.add(visual_panel, text="  Visual step builder  ")
+        self.flow_tabs.add(json_panel, text="  JSON source  ")
+        self.builder = WorkflowBuilder(visual_panel, EXAMPLE_STEPS)
+        self.builder.pack(fill="both", expand=True)
+        self.workflow = tk.Text(json_panel, font=("Cascadia Code", 11), bg=PANEL, fg=FG,
+                                insertbackground=FG, relief="flat", undo=True, padx=17, pady=16, wrap="none")
         self.workflow.pack(fill="both", expand=True)
         self.workflow.insert("1.0", json.dumps(EXAMPLE_STEPS, indent=2, ensure_ascii=False))
+        self.flow_tabs.bind("<<NotebookTabChanged>>", self._sync_workflow_tabs)
+        # Extensions are never downloaded automatically and never executed on install.
+        extension_header = ttk.Frame(extensions_tab)
+        extension_header.pack(fill="x", pady=(0, 12))
+        ttk.Label(extension_header, text="Locally installed Manifest V3 extensions", style="Heading.TLabel").pack(side="left")
+        for title, cmd in (("Add folder", self.install_extension_folder), ("Add ZIP", self.install_extension_zip),
+                           ("Attach to selected profile", self.attach_extension), ("Detach", self.detach_extension),
+                           ("Remove", self.remove_extension)):
+            ttk.Button(extension_header, text=title, command=cmd).pack(side="right", padx=(7, 0))
+        ttk.Label(extensions_tab, text="Only Playwright Chromium supports sideloaded extensions. Select a profile in Profiles first. Review permissions before enabling.",
+                  style="Muted.TLabel").pack(anchor="w", pady=(0, 10))
+        self.extension_tree = ttk.Treeview(extensions_tab, columns=("name", "version", "permissions", "attached"), show="headings")
+        for column, width in (("name", 280), ("version", 110), ("permissions", 470), ("attached", 120)):
+            self.extension_tree.heading(column, text=column.title())
+            self.extension_tree.column(column, width=width, stretch=column in ("name", "permissions"))
+        self.extension_tree.pack(fill="both", expand=True)
+        self.extension_tree.bind("<Double-1>", lambda *_: self.extension_details())
+        ttk.Button(extensions_tab, text="View permissions", command=self.extension_details).pack(anchor="e", pady=(10, 0))
+        self.refresh_extensions()
         ttk.Label(logs_tab, text="Session activity", style="Heading.TLabel").pack(anchor="w", pady=(0, 14))
         self.log_widget = tk.Text(logs_tab, font=("Cascadia Code", 10), bg=PANEL, fg=FG, insertbackground=FG, relief="flat", state="disabled", padx=15, pady=15)
         self.log_widget.pack(fill="both", expand=True)
         bottom = ttk.Frame(page)
         bottom.pack(fill="x", pady=(12, 0))
         ttk.Label(bottom, textvariable=self.status, foreground=MUTED).pack(side="left")
-        ttk.Label(bottom, text="v0.3.0  ·  PRIVATE BY DEFAULT", foreground=ACCENT).pack(side="right")
+        ttk.Label(bottom, text="DEVELOPMENT  ·  NO EXE RELEASE", foreground=ACCENT).pack(side="right")
 
     def selected_id(self, alert=True):
         selected = self.tree.selection()
@@ -252,6 +283,7 @@ class App:
             self.tree.insert("", "end", iid=p.id, values=(p.name, p.group_name, p.tags, p.browser, (p.proxy_host or "Direct"), "● Running" if self.manager.active(p.id) else "○ Stopped"))
         if old and self.tree.exists(old):
             self.tree.selection_set(old)
+        self.refresh_extensions()
 
     def new_profile(self):
         ProfileEditor(self, None)
@@ -350,7 +382,22 @@ class App:
             except Exception as exc:
                 messagebox.showerror("Import error", str(exc))
 
+    def _sync_workflow_tabs(self, _event=None):
+        # Both editor views use the same strict schema; never silently drop an invalid JSON edit.
+        if self.flow_tabs.index("current") == 0:
+            try:
+                self.builder.set_steps(validated_steps(json.loads(self.workflow.get("1.0", "end"))))
+            except (ValueError, TypeError, json.JSONDecodeError) as exc:
+                messagebox.showerror("Invalid JSON workflow", str(exc), parent=self.root)
+                self.flow_tabs.select(1)
+        else:
+            steps = self.builder.get_steps() if self.builder._steps else []
+            self.workflow.delete("1.0", "end")
+            self.workflow.insert("1.0", json.dumps(steps, indent=2, ensure_ascii=False))
+
     def current_steps(self):
+        if self.flow_tabs.index("current") == 0:
+            return self.builder.get_steps()
         return validated_steps(json.loads(self.workflow.get("1.0", "end")))
 
     def run_workflow(self):
@@ -376,6 +423,7 @@ class App:
                 validated_steps(json.loads(source))
                 self.workflow.delete("1.0", "end")
                 self.workflow.insert("1.0", source)
+                self.builder.set_steps(validated_steps(json.loads(source)))
             except Exception as exc:
                 messagebox.showerror("Workflow error", str(exc))
 
@@ -388,6 +436,106 @@ class App:
                 self.notice(f"Saved workflow: {path}")
         except Exception as exc:
             messagebox.showerror("Workflow error", str(exc))
+
+    def refresh_extensions(self):
+        if not hasattr(self, "extension_tree"):
+            return
+        self.extension_tree.delete(*self.extension_tree.get_children())
+        profile_id = self.selected_id(False) if hasattr(self, "tree") else None
+        attached = set(self.extensions.attached_ids(profile_id)) if profile_id else set()
+        for item in self.extensions.list():
+            permissions = ", ".join([*item.permissions, *item.host_permissions])
+            self.extension_tree.insert("", "end", iid=item.id,
+                                       values=(item.name, item.version, permissions[:150], "Yes" if item.id in attached else "No"))
+
+    def selected_extension(self):
+        selection = self.extension_tree.selection()
+        if not selection:
+            messagebox.showinfo("Extensions", "Select an extension first", parent=self.root)
+            return None
+        return next((e for e in self.extensions.list() if e.id == selection[0]), None)
+
+    def install_extension_folder(self):
+        source = filedialog.askdirectory(title="Choose an unpacked Manifest V3 extension")
+        if source:
+            self._install_extension(Path(source), archive=False)
+
+    def install_extension_zip(self):
+        source = filedialog.askopenfilename(title="Choose a Manifest V3 extension archive", filetypes=[("ZIP", "*.zip")])
+        if source:
+            self._install_extension(Path(source), archive=True)
+
+    def _install_extension(self, path: Path, archive: bool):
+        if not messagebox.askyesno("Untrusted extension warning",
+                                   "Browser extensions can read and modify web pages, including private data.\n"
+                                   "Only install extensions that you trust and have reviewed. Continue?", parent=self.root):
+            return
+        try:
+            record = self.extensions.install_zip(path) if archive else self.extensions.install_folder(path)
+            self.refresh_extensions()
+            self.notice(f"Imported {record.name}, not enabled on any profile")
+            messagebox.showinfo("Extension imported (not enabled)",
+                                f"Name: {record.name}\nVersion: {record.version}\n"
+                                f"Permissions: {', '.join(record.permissions) or '(none)'}\n"
+                                f"Hosts: {', '.join(record.host_permissions) or '(none)'}\n\n"
+                                "Use Attach to allow this extension in a selected Chromium profile.", parent=self.root)
+        except Exception as exc:
+            messagebox.showerror("Install extension", str(exc), parent=self.root)
+
+    def extension_details(self):
+        record = self.selected_extension()
+        if record:
+            messagebox.showinfo("Extension permissions",
+                                f"{record.name} (v{record.version})\n\n"
+                                f"API permissions: {', '.join(record.permissions) or '(none)'}\n"
+                                f"Host permissions: {', '.join(record.host_permissions) or '(none)'}\n\n"
+                                "Imported extension source is not audited or automatically updated.", parent=self.root)
+
+    def attach_extension(self):
+        record, pid = self.selected_extension(), self.selected_id()
+        if not record or not pid:
+            return
+        if self.manager.active(pid):
+            messagebox.showwarning("Profile running", "Stop this profile before modifying extensions")
+            return
+        if not messagebox.askyesno("Grant extension access",
+                                   f"Enable {record.name} for this browser profile?\n\n"
+                                   f"API permissions: {', '.join(record.permissions) or '(none)'}\n"
+                                   f"Host permissions: {', '.join(record.host_permissions) or '(none)'}\n\n"
+                                   "Extensions can observe page content.", parent=self.root):
+            return
+        try:
+            self.extensions.attach(pid, record.id)
+            self.refresh_extensions()
+            self.notice(f"Attached extension {record.name}; restart the profile to load")
+        except Exception as exc:
+            messagebox.showerror("Attach extension", str(exc), parent=self.root)
+
+    def detach_extension(self):
+        record, pid = self.selected_extension(), self.selected_id()
+        if not record or not pid:
+            return
+        if self.manager.active(pid):
+            messagebox.showwarning("Profile running", "Stop the profile before detaching extensions")
+            return
+        self.extensions.detach(pid, record.id)
+        self.refresh_extensions()
+        self.notice(f"Detached {record.name}")
+
+    def remove_extension(self):
+        record = self.selected_extension()
+        if not record:
+            return
+        if any(self.manager.active(p.id) and record.id in self.extensions.attached_ids(p.id) for p in self.store.all()):
+            messagebox.showwarning("Extension active", "Stop attached browser profiles first")
+            return
+        if messagebox.askyesno("Remove extension", f"Delete local files for {record.name}?", parent=self.root):
+            try:
+                self.extensions.remove(record.id)
+                self.refresh_extensions()
+                self.notice(f"Removed {record.name}")
+            except Exception as exc:
+                messagebox.showerror("Remove extension", str(exc), parent=self.root)
 
     def toggle_api(self):
         try:

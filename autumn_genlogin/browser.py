@@ -8,6 +8,7 @@ from datetime import datetime
 
 from .models import Profile, validated_steps
 from .locks import ProfileLease
+from .extensions import ExtensionLibrary
 from .secrets import get_password
 from .storage import Store
 
@@ -17,6 +18,7 @@ class BrowserManager:
 
     def __init__(self, store: Store):
         self.store = store
+        self.extensions = ExtensionLibrary(store)
         self.events: queue.Queue[tuple[str, str, str]] = queue.Queue()
         self._lock = threading.RLock()
         self._workers: dict[str, tuple[threading.Thread, queue.Queue]] = {}
@@ -98,6 +100,13 @@ class BrowserManager:
                 viewport={"width": profile.viewport_width, "height": profile.viewport_height},
                 accept_downloads=True,
             )
+            extension_paths = self.extensions.paths_for(pid)
+            if extension_paths:
+                # Chrome and Edge no longer permit command-line sideloading.
+                # Only bundled Playwright Chromium supports the official flags.
+                locations = ",".join(str(path) for path in extension_paths)
+                options["args"] = ["--disable-extensions-except=" + locations, "--load-extension=" + locations]
+                options["channel"] = "chromium"
             if profile.browser in {"chrome", "msedge"}:
                 options["channel"] = profile.browser
             if profile.user_agent:
@@ -191,4 +200,5 @@ class BrowserManager:
                 self.events.put((pid, "log", f"Screenshot saved: {path}"))
             elif action == "extract_text":
                 value = page.locator(step["selector"]).first.inner_text(timeout=20000)
-                self.events.put((pid, "log", "Extracted text: " + value[:400].replace("\n", " ")))
+                # Website text may include private tokens, personal information or passwords.
+                self.events.put((pid, "log", f"Text extracted ({len(value)} characters; not logged)"))

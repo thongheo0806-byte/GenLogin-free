@@ -132,3 +132,9 @@ For public-source feature comparisons and Sybil limitations, see [`docs/GENLOGIN
 - Licensed **MIT** for AutumnGenLogin original source. Dependencies retain their respective licenses.
 
 **GenLogin** is a third-party product and brand. AutumnGenLogin does not use its source code, internal APIs, artwork, logos or proprietary fingerprints.
+
+## Development update: extension library and visual workflow (not a parity release)
+
+The current source adds a local Manifest V3 extension manager (manual ZIP/unpacked folder import, permission review, per-Chromium-profile attach/detach) and a sequential visual workflow builder (edit, duplicate, drag reorder, import/export validated JSON steps). Chrome/Edge no longer support command-line extension sideloading via the old flags. Use Playwright-managed Chromium for these manual extensions; an extension package is arbitrary executable code and should only be installed after reviewing its provenance and requested permissions.
+
+The repo's Windows workflow is now **test-only**, with an explicit real Chromium isolation smoke lane. Do **not** interpret passing unit tests as an endorsement of production readiness or GenLogin/Titan feature equivalence. See [strict release gates](docs/RELEASE_GATES.md), [feature matrix](docs/FEATURE_MATRIX.md), [license and engine notes](docs/ENGINE_LICENSING.md).

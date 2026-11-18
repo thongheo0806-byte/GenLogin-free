@@ -23,3 +23,11 @@
 - Diagnostics use local SQLite `PRAGMA quick_check`, write-access checks and orphan-directory reporting. They do not request websites or read browser cookies/history. The tool never deletes suspected orphan data.
 - Run `python main.py --doctor` or `python main.py --doctor-json` for a local, offline report; GUI has a **Diagnostics** button. Reports contain no proxy usernames or passwords.
 - This prototype is not an anonymity suite and does not bypass Sybil, anti-bot, CAPTCHA, KYC or terms-of-service enforcement. No such outcome can be guaranteed.
+
+## Development hardening, 2026-11-18
+
+- Extension ZIP imports reject traversal paths, symlinks, oversized entries and malformed Manifest V3 metadata. Imported code is **not** executed during install. An explicit permission confirmation is required before attachment and profile restart.
+- The extension permission preview is informational, not a code review. Only install source from a trusted developer. Running arbitrary extensions can expose browser sessions.
+- `extract_text` workflow logs only the text length, not site content, to reduce secret exposure.
+- The automated Windows CI runs synthetic local web pages with no real accounts. This does not prove Titan-style fingerprinting or Sybil resistance.
+- No EXE is produced until the documented release gates are met.

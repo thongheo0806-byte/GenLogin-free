@@ -107,6 +107,10 @@ class Store:
                 if directory.exists():
                     shutil.rmtree(directory)
             with self._connect() as c:
+                # Extensions are optional; older stores might not have the table yet.
+                exists = c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='profile_extensions'").fetchone()
+                if exists:
+                    c.execute("DELETE FROM profile_extensions WHERE profile_id = ?", (profile_id,))
                 c.execute("DELETE FROM profiles WHERE id = ?", (profile_id,))
 
     def export_metadata(self, target: Path) -> int:
