@@ -128,3 +128,11 @@ For design evidence, known gaps and priorities see [`docs/FEATURE_MATRIX.md`](do
 - Licensed **MIT** for AutumnGenLogin original source. Dependencies retain their respective licenses.
 
 **GenLogin** is a third-party product and brand. AutumnGenLogin does not use its source code, internal APIs, artwork, logos or proprietary fingerprints.
+
+## Verified Windows build (2026-11-18)
+
+- [GitHub Actions run #44230909046](https://github.com/thongheo0806-byte/GenLogin-free/actions/runs/44230909046): **success** on `windows-latest` using Python 3.12.
+- Unit tests: **16 passed** on the Windows runner.
+- Packaging: PyInstaller x64 executable `AutumnGenLogin.exe` (59,115,249 bytes). The packaged `--self-check` returned exit code 0.
+- Artifact: `AutumnGenLogin-Windows-x64` (available via the run page for the artifact retention window).
+- Important: CI smoke tests verify packaging and database bootstrapping, **not** manual GUI usability, real proxy routing, browser fingerprint parity, or compatibility with all installed Chrome/Edge versions.
