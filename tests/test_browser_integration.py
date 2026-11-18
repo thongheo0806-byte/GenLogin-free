@@ -4,6 +4,7 @@ Set AUTUMN_E2E=1 after `python -m playwright install chromium`.
 No third-party sites, accounts, proxies or platform anti-abuse checks are used.
 """
 import os
+import time
 import tempfile
 import threading
 import unittest
@@ -47,7 +48,7 @@ class BrowserIntegrationTests(unittest.TestCase):
                     page.goto(origin)
                     self.assertEqual(page.locator("h1").inner_text(), "Local fixture")
                     page.evaluate("localStorage.setItem('owner','alpha')")
-                    page.context.add_cookies([{"name": "label", "value": "alpha", "url": origin}])
+                    page.context.add_cookies([{"name": "label", "value": "alpha", "url": origin, "expires": time.time() + 3600}])
                 finally:
                     c1.close()
                 c2 = pw.chromium.launch_persistent_context(str(store.profile_path(beta.id)), headless=True)
