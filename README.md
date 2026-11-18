@@ -1,13 +1,130 @@
-# AutumnGenLogin
+# AutumnGenLogin 🌙
 
-AutumnGenLogin is an independently developed, local-first Windows browser profile manager. Its source code, automated tests, and Windows executable build workflow will live here.
+**Free, local-first browser profile studio for Windows**. This is an independent open-source implementation inspired by the *category* of browser profile managers. **Not affiliated with GenLogin; not a clone of its proprietary browser engine.**
 
-**Status:** early development. A full GenLogin-compatible antidetect engine, cloud sync, and drag-and-drop automation are **not** implemented or verified.
+**Project status: v0.2.0 foundation.** The source code and Windows build workflow are included. The EXE is built by GitHub Actions on a Windows runner. No prebuilt or Windows-tested executable is claimed until that workflow passes.
 
-## Principles
-- Local SQLite profile catalog; isolated Playwright browser user-data directories.
-- Opt-in proxy settings and scoped loopback API with authentication.
-- Windows-first GitHub Actions checks and application packaging.
-- No reproduction of proprietary code or unsupported stealth guarantees.
+## Current features
 
-See `docs/FEATURE_MATRIX.md` and `docs/ROADMAP.md` after the next source import.
+- Create, edit, clone, group, tag, search, import and export browser profile **metadata**.
+- Launch independent Chrome/Edge/Playwright Chromium sessions with distinct persistent `user_data_dir` folders (cookies, history and sessions isolated by directory).
+- Set locale, timezone, viewport, optional user agent, start URL, and per-profile HTTP/SOCKS5 proxy. Proxy passwords are stored via the OS credential vault (`keyring`), not in SQLite or export JSON.
+- Run up to six browser sessions at once, with independent worker threads. Bulk-open one selected group from the desktop UI.
+- Build and run a JSON workflow without executing untrusted code: `goto`, `click`, `fill`, `press`, `check`, `uncheck`, `select_option`, `scroll_into_view`, `wait`, `wait_for`, `extract_text`, `screenshot`. Cancel between steps.
+- Save screenshots in a per-profile local directory.
+- Opt-in, loopback-only HTTP API with a fresh bearer token per startup. **Off by default**.
+- SQLite metadata stored locally, no subscription, no login, no cloud sync or tracking service.
+- A Windows GitHub Actions workflow runs unit tests, builds `AutumnGenLogin.exe` with PyInstaller, smoke-tests the packaged app and uploads the artifact.
+
+## Quick start: Windows (source)
+
+1. Install **Python 3.12** and **Google Chrome or Microsoft Edge**.
+2. Clone/download this repository and open PowerShell in its directory. Alternatively, double-click `START-WINDOWS.cmd` to install runtime dependencies and launch.
+3. Run:
+
+   ```powershell
+   py -3.12 -m venv .venv
+   .\.venv\Scripts\Activate.ps1
+   python -m pip install -r requirements.txt
+   python main.py
+   ```
+
+4. Click **+ New profile**, choose `chrome` or `msedge`, save the profile, select it and click **Open**.
+5. To use browser engine `chromium` instead, install Playwright's browser separately: `python -m playwright install chromium` (in the same Python environment). **The bundled single-file EXE does not include a Chromium browser**; Chrome/Edge installed on the computer is the recommended mode.
+
+## Getting AutumnGenLogin.exe
+
+1. Push these project files to the `main` branch of your GitHub repository, including the hidden `.github/workflows/windows-build.yml` folder.
+2. Open **Actions → Test and build AutumnGenLogin Windows EXE → Run workflow** (or wait for a push-triggered run).
+3. Once the run succeeds, download **AutumnGenLogin-Windows-x64** from the **Artifacts** section.
+4. Extract the ZIP to obtain `AutumnGenLogin.exe`. Run on Windows with installed Chrome/Edge.
+
+If GitHub integration cannot write to the repo, you may use `PUBLISH-TO-GITHUB.ps1` on Windows to publish the sources from your own Git login; it requires an explicit `PUBLISH` confirmation and never force-pushes.
+
+Alternatively, double-click `BUILD-EXE-WINDOWS.cmd` or build locally on Windows:
+
+```powershell
+python -m pip install -r requirements-build.txt
+pyinstaller --clean --noconfirm --onefile --windowed --name AutumnGenLogin --collect-all playwright --collect-all keyring main.py
+```
+
+**Important:** GitHub Actions artifacts are not the same as GitHub Releases. This project does not yet publish versioned releases or digitally sign EXEs. Windows SmartScreen may warn for unsigned binaries. Review the source and verify the GitHub Actions run before trusting the executable.
+
+## Data locations and privacy
+
+On Windows: `%LOCALAPPDATA%\AutumnGenLogin\`.
+
+- `profiles.sqlite3`: profile metadata, without proxy passwords.
+- `browser-data\<uuid>\`: browser-owned cookies, local storage and browsing sessions (sensitive; never commit this directory).
+- `screenshots\<uuid>\`: workflow screenshots (also may contain sensitive data).
+- Proxy passwords: Windows Credential Manager through `keyring`.
+- `AUTUMN_GENLOGIN_HOME`: optional absolute local data directory override (for advanced users).
+
+**Export** includes metadata only, not browser sessions, cookies or proxy passwords. **Clone** creates fresh browser state and does not carry credentials. Deletion is permanent and deletes local browser-state files. Consider backing up first.
+
+## Automation example
+
+Paste into the **Automation** tab, select an open profile and click **Run on selected profile**:
+
+```json
+[
+  {"action": "goto", "url": "https://example.com"},
+  {"action": "wait_for", "selector": "h1"},
+  {"action": "extract_text", "selector": "h1"},
+  {"action": "screenshot"}
+]
+```
+
+Actions are validated before execution. Arbitrary JavaScript, Python, shell commands, `file://` and `javascript:` URLs are not supported in workflows.
+
+## Local API (optional)
+
+Click **API: OFF** to start a server *only* on `127.0.0.1:8765` and display the current token. The token changes every app launch. Requests require `Authorization: Bearer <token>`. There is no unauthenticated control endpoint.
+
+```powershell
+$token = 'COPY_TOKEN_FROM_APP'
+$headers = @{ Authorization = "Bearer $token" }
+Invoke-RestMethod http://127.0.0.1:8765/v1/health -Headers $headers
+Invoke-RestMethod http://127.0.0.1:8765/v1/profiles -Headers $headers
+# Replace PROFILE_UUID with an ID from /v1/profiles
+Invoke-RestMethod http://127.0.0.1:8765/v1/profiles/PROFILE_UUID/open -Headers $headers -Method Post -ContentType 'application/json' -Body '{}'
+```
+
+Also available: `POST /v1/profiles/{id}/stop`, `POST /v1/profiles/{id}/cancel`, and `POST /v1/profiles/{id}/run` with `{"steps": [...]}`. These queue asynchronous browser actions; HTTP 202 means *accepted*, not completed. The API is not designed to be exposed to a LAN or the internet.
+
+## Tests
+
+```powershell
+python -m unittest discover -s tests -v
+python main.py --self-check
+```
+
+Unit tests cover profile validation, CRUD/export/import/backup, flow validation and loopback API authorization/error cases. They do **not** yet establish actual GUI usability, Windows proxy compatibility, fingerprint equivalence, browser crash recovery, or signed release provenance.
+
+## Comparison to GenLogin
+
+| Feature | This repo v0.2.0 | Status |
+|---|---|---|
+| Persistent browser profile separation | Independent per-profile Chromium data dir | Implemented, platform QA pending |
+| Profile manager, tags, groups, search, clone | Local SQLite + UI | Implemented |
+| Proxy HTTP/SOCKS5 (including optional auth) | Playwright configuration + OS credential vault | Implemented, compatibility QA pending |
+| Locale, timezone, viewport, user agent | Standard Playwright context options | Implemented |
+| Visual drag/drop workflow builder | JSON workflow editor only | Not implemented |
+| Deep stealth fingerprint engine / custom browser core | Standard Chrome/Edge/Chromium, no engine patch | **Not implemented** |
+| Cloud sync / team role sharing | Local only | Not implemented |
+| Marketplace / GenLogin-exclusive integrations | None | Not implemented |
+| Browser extension management UI | None | Not implemented |
+| Windows installer, signed EXE, automatic updates | GitHub Actions one-file build | Partially implemented |
+| AI workflow assistant | No AI or external account required | Planned |
+
+**No anti-detection guarantee:** IP, browser configuration and profile separation do not imply immunity to platform security systems. Use with sites you are authorized to access and comply with their terms. This repo does not implement CAPTCHA bypass, account farming or platform evasion.
+
+For design evidence, known gaps and priorities see [`docs/FEATURE_MATRIX.md`](docs/FEATURE_MATRIX.md), [`docs/ROADMAP.md`](docs/ROADMAP.md) and [`docs/REA_EVIDENCE.md`](docs/REA_EVIDENCE.md).
+
+## Acknowledgements and license
+
+- Investigation approach: [REA by morluto](https://github.com/morluto/rea) (skill instructions, evidence-first methods, not a GenLogin desktop binary analysis).
+- Architecture references: [Playwright persistent contexts](https://playwright.dev/python/docs/api/class-browsertype), [BrowserOpsLab browser profile manager](https://github.com/BrowserOpsLab/playwright-browser-profile-manager), [thePrivator](https://github.com/yanx9/thePrivator). The source here was independently implemented; third-party code was not copied.
+- Licensed **MIT** for AutumnGenLogin original source. Dependencies retain their respective licenses.
+
+**GenLogin** is a third-party product and brand. AutumnGenLogin does not use its source code, internal APIs, artwork, logos or proprietary fingerprints.

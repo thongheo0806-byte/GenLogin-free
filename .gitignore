@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+.venv/
+.env
+.env.*
+dist/
+build/
+*.spec
+*.sqlite3
+*.sqlite3-*
+browser-data/
+screenshots/
+*.log
+*.zip
+.pytest_cache/
+.DS_Store

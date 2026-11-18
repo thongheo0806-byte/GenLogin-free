@@ -1,0 +1,45 @@
+"""AutumnGenLogin desktop entry point and CI-friendly packaged self-test."""
+from __future__ import annotations
+
+import sys
+
+
+def self_check() -> int:
+    try:
+        from tempfile import TemporaryDirectory
+        from pathlib import Path
+        from autumn_genlogin.models import Profile
+        from autumn_genlogin.storage import Store
+        import playwright.sync_api  # noqa: F401
+        import keyring  # noqa: F401
+
+        with TemporaryDirectory() as d:
+            store = Store(Path(d))
+            p = store.save(Profile(name="Self-check", start_url="https://example.com"))
+            if store.get(p.id).name != "Self-check":
+                return 2
+            store.delete(p.id)
+        print("AutumnGenLogin self-check OK")
+        return 0
+    except Exception as exc:
+        print(f"AutumnGenLogin self-check FAILED: {exc}", file=sys.stderr)
+        return 1
+
+
+def main() -> int:
+    if "--self-check" in sys.argv:
+        return self_check()
+    import tkinter as tk
+    from autumn_genlogin.ui import App
+    root = tk.Tk()
+    try:
+        root.tk.call("tk", "scaling", 1.2)
+    except tk.TclError:
+        pass
+    App(root)
+    root.mainloop()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

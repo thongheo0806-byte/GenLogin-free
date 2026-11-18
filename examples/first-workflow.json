@@ -1,0 +1,6 @@
+[
+  {"action": "goto", "url": "https://example.com"},
+  {"action": "wait_for", "selector": "h1"},
+  {"action": "extract_text", "selector": "h1"},
+  {"action": "screenshot"}
+]
