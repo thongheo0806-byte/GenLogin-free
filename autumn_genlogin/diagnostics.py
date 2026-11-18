@@ -8,6 +8,7 @@ from __future__ import annotations
 import os
 import shutil
 import sqlite3
+from contextlib import closing
 import tempfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -30,7 +31,7 @@ def audit_store(store: Store) -> dict:
         checks.append(Check(name, status, detail))
 
     try:
-        with sqlite3.connect(f"file:{store.db.as_posix()}?mode=ro", uri=True) as conn:
+        with closing(sqlite3.connect(f"file:{store.db.as_posix()}?mode=ro", uri=True)) as conn:
             result = conn.execute("PRAGMA quick_check").fetchone()[0]
         add("database_integrity", "pass" if result == "ok" else "fail", "SQLite quick_check: " + str(result)[:120])
     except (OSError, sqlite3.Error) as exc:
