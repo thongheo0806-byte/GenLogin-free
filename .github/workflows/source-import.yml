@@ -1,0 +1,58 @@
+name: Import verified source and build AutumnGenLogin EXE
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/source-import.yml"
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  import-test-build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: source.tar.xz
+      - name: Extract owned source archive
+        run: python -c "import tarfile; tarfile.open('source.tar.xz', 'r:xz').extractall('.', filter='data')"
+      - name: Install dependencies
+        run: python -m pip install -r requirements-build.txt
+      - name: Run unit tests
+        run: python -m unittest discover -s tests -v
+      - name: Application self-check
+        run: python main.py --self-check
+      - name: Build executable
+        run: pyinstaller --clean --noconfirm --onefile --windowed --name AutumnGenLogin --collect-all playwright --collect-all keyring main.py
+      - name: Windows EXE smoke test
+        shell: pwsh
+        run: |
+          $exe = Join-Path (Get-Location) "dist\AutumnGenLogin.exe"
+          $check = Start-Process -FilePath $exe -ArgumentList "--self-check" -Wait -PassThru
+          if ($check.ExitCode -ne 0) { throw "Windows EXE self-check failed: $($check.ExitCode)" }
+      - name: Commit verified source files
+        shell: pwsh
+        run: |
+          Remove-Item -Path source.tar.xz -Force
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # Do not modify workflow definitions from inside a workflow.
+          git add --all -- . ":(exclude).github"
+          git diff --cached --quiet
+          if ($LASTEXITCODE -eq 1) {
+            git commit -m "feat: publish AutumnGenLogin v0.2.0 verified sources [skip ci]"
+            if ($LASTEXITCODE -ne 0) { throw "git commit failed" }
+            git push origin HEAD:main
+            if ($LASTEXITCODE -ne 0) { throw "git push failed" }
+          }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AutumnGenLogin-Windows-x64
+          path: dist/AutumnGenLogin.exe
+          if-no-files-found: error
+          retention-days: 14
