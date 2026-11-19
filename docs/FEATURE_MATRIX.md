@@ -1,19 +1,32 @@
 # GenLogin feature matrix / AutumnGenLogin acceptance evidence
 
-Assessed 2026-11-18 from public vendor descriptions, Microsoft Playwright documentation and audited application source. **This is not an observed GenLogin binary audit**. Product plan, version and behavior must be pinned before making a genuine equivalence claim.
+**Updated 2026-11-19.** Audited development baseline: v0.5 commit cc74b0cc45a8, plus security PR #5 and scheduler-retry work currently in review. There is no inspected GenLogin/Titan executable for a true same-version runtime comparison.
 
-| Capability | Public GenLogin source | AutumnGenLogin development state | Evidence / work remaining |
+The [official public release notes](https://genlogin.com/release-notes) currently list GenLogin **4.5.1 (06/08/2026)**. This is a published listing, not a verified installer, license authorization or binary SHA-256.
+
+| Capability | GenLogin reference | AutumnGenLogin development subset | Parity/evidence gap |
 |---|---|---|---|
-| Profile create/edit/delete/clone | https://docs.genlogin.com/group-profiles/create-profile/overview | Implemented | SQLite unit tests and manual GUI need verification |
-| Group, tags, bulk launch | https://docs.genlogin.com/group-profiles/group-profiles | Implemented basic | No group hierarchy, bulk workflow orchestration |
-| Local/cloud profiles | https://docs.genlogin.com/group-profiles/local-and-cloud-profiles | Local only | No cloud sync/backend/conflicts |
-| Fingerprint / Titan core | https://docs.genlogin.com/group-profiles/create-profile/overview | **Not implemented** | Native engine details unknown, no proof of equivalence |
-| Proxy and network settings | https://docs.genlogin.com/group-profiles/create-profile/network-and-webrtc | HTTP/SOCKS5 proxy metadata | No actual proxy integration/leak testing or complex routing |
-| Extensions | https://docs.genlogin.com/group-profiles/extensions | Manual local Manifest V3 library with explicit opt-in for Chromium | Needs real browser extension run, gallery, policy, updates, security review |
-| No-code automation | https://genlogin.com/automation | Sequential visual step editor (add, edit, reorder, delete) | Not full graph, variables/branches/loops, click-by-image or recorder |
-| Advanced task operations | https://genlogin.com/automation | Parallel open and per-profile JSON actions | No scheduler, synchronizer, action recorder, video, miniapp design |
-| External API | https://docs.genlogin.com/genlogin-api/profile-api/1.-profile-list | Local bearer-token API with different contract | API parity and SDK missing |
-| Team access / sharing | https://docs.genlogin.com/group-profiles/share-profile | Not implemented | Requires identity, encryption and RBAC |
-| Tests & diagnostics | internal product engineering requirement | Unit tests plus real Chromium integration test prepared | Windows CI result must be evaluated; GUI test not performed |
+| Profile CRUD, clone, local session | [Profiles](https://docs.genlogin.com/group-profiles/create-profile/overview) | SQLite catalog, persistent user data, cross-process locks, Windows Chromium tests | GUI end-to-end, migration and failure injection |
+| Groups, tags, bulk management | [Groups](https://docs.genlogin.com/group-profiles/group-profiles) | Basic groups/tags and local profile list | Bulk workflow launch, UI performance, hierarchy |
+| Titan/fingerprint rendering | [Technology](https://docs.genlogin.com/) | **Not implemented or verified**. Playwright engines are not Titan | Authorized baseline executable, differential tests, licenses |
+| Proxy, locale, WebRTC | [Network](https://docs.genlogin.com/group-profiles/create-profile/network-and-webrtc) | Validated profile settings and proxy options | Real proxy and leak/consistency verification |
+| Engine compatibility | [Playwright engines](https://playwright.dev/docs/browsers) | Chromium, Chrome, Edge, Firefox and WebKit launch lanes passed Windows CI | Multi-version compatibility, long-running crashes |
+| Extensions | [Extensions](https://docs.genlogin.com/group-profiles/extensions) | Local opt-in Manifest V3 library for bundled Chromium | Marketplace, trust audit, updates/rollback |
+| Sequential automation | [Automation](https://genlogin.com/automation) | Typed JSON actions, results and local API | Advanced actions, error recovery, SDK |
+| Visual graph automation | [Automation](https://genlogin.com/automation) | Bounded condition/repeat/action graph, Tk editor | Full node catalog, variables, parallel branches, UI usability |
+| Recorder | [Automation](https://genlogin.com/automation) | Capture click/select/form selectors with private values redacted | Complex action replay and multi-page tests |
+| Scheduler | [Automation](https://genlogin.com/automation) | Durable SQLite one-shot and interval dispatch while app is open; manual retry under development | Execution completion, crash recovery and durable run history |
+| Image click, video, AI, synchronizer, miniapps | [Automation](https://genlogin.com/automation) | **Not implemented** | Complete independent features and tests |
+| Full cloud browser-session sync | [Local/cloud profiles](https://docs.genlogin.com/group-profiles/local-and-cloud-profiles) | **Not implemented** | Secure session transfer, conflicts, rollback |
+| Optional team metadata sync | [Sharing](https://docs.genlogin.com/group-profiles/share-profile) | Encrypted metadata/workflows, loopback RBAC and revisions; redirect bearer-token fix | Production HTTPS, disaster recovery, wider security tests |
+| Public API compatibility | [GenLogin API](https://docs.genlogin.com/genlogin-api/profile-api/1.-profile-list) | Independent authenticated local API | Contract compatibility, versioned SDK |
+| Release, license and reliability | Engineering acceptance | Test-only Windows CI, diagnostics, staged deletion | Full GUI acceptance, fault injection, license/SBOM, signing |
 
-**Critical unknowns:** full GenLogin release/plan feature list, proprietary engine semantics, browser provenance, profile migration, runtime behavior, plugin support and licensing. The official marketing page lists scheduler, synchronizer, AI, headless, image click, recording and miniapps; a simple sequential builder is not equivalent to those features.
+## Verification boundaries
+
+- Windows CI 44458151452: five jobs passed on v0.5 main, covering separate unit, Chromium, Firefox/WebKit, Chrome/Edge and old-venv-upgrade lanes. Unit tests skipped due to missing browser binaries do not count as executed real-browser checks.
+- Security CI 44542164849: five jobs passed, including the cloud-client redirect regression. This does not certify production cloud security.
+- Scheduler-retry work is **not** accepted until its own CI and merge pass. Submission to BrowserManager is not proof of workflow completion.
+- Public GenLogin marketing/documentation describes scope, not specific installed binary behavior. Native Titan parity remains unverified.
+
+**Release status: HOLD EXE BUILD.** See RELEASE_GATES.md and TITAN_VERIFICATION_PROTOCOL.md. Do not publish an EXE simply because unit tests are green.
