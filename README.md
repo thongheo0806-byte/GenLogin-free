@@ -4,21 +4,21 @@
 
 **Free, local-first browser profile studio for Windows**. This is an independent open-source implementation inspired by the *category* of browser profile managers. **Not affiliated with GenLogin; not a clone of its proprietary browser engine.**
 
-**Project status: v0.4.1-dev, incomplete feature parity.** This development branch adds a sequential visual workflow builder, opt-in local Manifest V3 extensions for Playwright Chromium, and Windows browser/GUI integration tests. The release build is disabled; a passing test is not an approval to ship.
+**Project status: v0.4.2-dev (2026-11-19 audit fixes), incomplete feature parity.** This development branch adds a sequential visual workflow builder, opt-in local Manifest V3 extensions for Playwright Chromium, and Windows browser/GUI integration tests. The release build is disabled; a passing test is not an approval to ship.
 
 ## Current features
 
-**Reliability changes since v0.3:** Cross-process profile locking to guard against concurrent use of one browser data folder; refuses deletion of profiles still open in another process. A read-only, offline Diagnostics command and GUI button check SQLite health, disk space and orphaned browser folders without reading browser sessions or network access.
+**Reliability since v0.3:** Cross-process profile locking guards concurrent browser access. The 2026-11-19 audit fix adds browser-close detection and bounded event pumping, recovery-safe profile deletion (staging + database transaction + post-commit cleanup), corrupt/missing-database `--doctor` support, safe SQLite URIs and a version marker. Diagnostics do not read browser sessions or contact third-party services; a short-lived temporary file is used to check directory writability.
 
 - Create, edit, clone, group, tag, search, import and export browser profile **metadata**.
 - Launch independent Chrome/Edge/Playwright Chromium sessions with distinct persistent `user_data_dir` folders (cookies, history and sessions isolated by directory).
-- Set locale, timezone, viewport, optional user agent, start URL, and per-profile HTTP/SOCKS5 proxy. Proxy passwords are stored via the OS credential vault (`keyring`), not in SQLite or export JSON.
+- Set locale, IANA timezone, viewport, optional user agent, start URL, and per-profile HTTP proxy (optional authentication) or SOCKS5 proxy (**no username/password authentication** in Chromium). Proxy passwords are stored via the OS credential vault (`keyring`), not in SQLite or export JSON.
 - Run up to six browser sessions at once, with independent worker threads. Bulk-open one selected group from the desktop UI.
 - Build and run a JSON workflow without executing untrusted code: `goto`, `click`, `fill`, `press`, `check`, `uncheck`, `select_option`, `scroll_into_view`, `wait`, `wait_for`, `extract_text`, `screenshot`. Cancel between steps.
 - Save screenshots in a per-profile local directory.
 - Opt-in, loopback-only HTTP API with a fresh bearer token per startup. **Off by default**.
 - SQLite metadata stored locally, no subscription, no login, no cloud sync or tracking service.
-- A Windows GitHub Actions workflow runs unit tests, builds `AutumnGenLogin.exe` with PyInstaller, smoke-tests the packaged app and uploads the artifact.
+- The Windows GitHub Actions workflow performs unit/GUI tests and headless real-Chromium integration checks; **EXE building and publishing are disabled** pending documented feature parity.
 
 ## Quick start: Windows (source)
 
@@ -73,7 +73,7 @@ Actions are validated before execution. Arbitrary JavaScript, Python, shell comm
 
 ## Local API (optional)
 
-Click **API: OFF** to start a server *only* on `127.0.0.1:8765` and display the current token. The token changes every app launch. Requests require `Authorization: Bearer <token>`. There is no unauthenticated control endpoint.
+Click **API: OFF** to start a server *only* on `127.0.0.1:8765` and display the current token. The token changes every app launch. Requests require `Authorization: Bearer <token>`. There is no unauthenticated control endpoint. Extracted text is potentially sensitive and is held in process memory, not activity logs; it is returned only to a client with the API bearer token.
 
 ```powershell
 $token = 'COPY_TOKEN_FROM_APP'
@@ -84,7 +84,7 @@ Invoke-RestMethod http://127.0.0.1:8765/v1/profiles -Headers $headers
 Invoke-RestMethod http://127.0.0.1:8765/v1/profiles/PROFILE_UUID/open -Headers $headers -Method Post -ContentType 'application/json' -Body '{}'
 ```
 
-Also available: `POST /v1/profiles/{id}/stop`, `POST /v1/profiles/{id}/cancel`, and `POST /v1/profiles/{id}/run` with `{"steps": [...]}`. These queue asynchronous browser actions; HTTP 202 means *accepted*, not completed. The API is not designed to be exposed to a LAN or the internet.
+Also available: `POST /v1/profiles/{id}/stop`, `POST /v1/profiles/{id}/cancel`, and `POST /v1/profiles/{id}/run` with `{"steps": [...]}`. These queue asynchronous browser actions; HTTP 202 means *accepted*, not completed. Read `GET /v1/profiles/{id}/runs/latest` to poll the status (`queued`, `running`, `succeeded`, `cancelled`, `failed`) and retrieve bounded `extract_text` output (up to 20 pieces of 4,096 characters; **sensitive; never share API token or results**). Only the latest run per profile is held in process memory. The API is not designed to be exposed to a LAN or the internet.
 
 ## Tests
 
@@ -95,22 +95,22 @@ python main.py --doctor
 python main.py --doctor-json
 ```
 
-Unit tests cover profile validation, CRUD/export/import/backup, OS profile locking, offline diagnostics, flow validation and loopback API authorization/error cases. They do **not** yet establish actual GUI usability, Windows proxy compatibility, fingerprint equivalence, browser crash recovery, or signed release provenance.
+Unit tests include regressions for manually closing a browser window (Playwright stub), corruption and URI-edge-case diagnostics, two-phase profile deletion, vault rollback, data import atomicity, malformed API authorization/inputs, proxy compatibility and workflow JSON preservation. `test_browser_integration.py` now exercises `BrowserManager` itself when `AUTUMN_E2E=1`. **Until the current Windows CI succeeds, Chromium lifecycle behavior remains unverified.** The tests do not establish real proxy compatibility, browser crash resilience on every Windows build, proprietary-engine parity or release provenance.
 
 ## Comparison to GenLogin
 
-| Feature | This repo v0.3.0 | Status |
+| Feature | This repo v0.4.2-dev | Status |
 |---|---|---|
 | Persistent browser profile separation | Independent per-profile Chromium data dir | Implemented, platform QA pending |
 | Profile manager, tags, groups, search, clone | Local SQLite + UI | Implemented |
-| Proxy HTTP/SOCKS5 (including optional auth) | Playwright configuration + OS credential vault | Implemented, compatibility QA pending |
+| Proxy HTTP and SOCKS5 (no-auth) | Playwright configuration, verified validation; HTTP credentials in OS vault | Real proxy QA pending |
 | Locale, timezone, viewport, user agent | Standard Playwright context options | Implemented |
-| Visual drag/drop workflow builder | JSON workflow editor only | Not implemented |
+| Visual drag/drop workflow builder | Sequential builder plus JSON roundtrip | Implemented basic; graph/recorder missing |
 | Deep stealth fingerprint engine / custom browser core | Standard Chrome/Edge/Chromium, no engine patch | **Not implemented** |
 | Cloud sync / team role sharing | Local only | Not implemented |
 | Marketplace / GenLogin-exclusive integrations | None | Not implemented |
-| Browser extension management UI | None | Not implemented |
-| Windows installer, signed EXE, automatic updates | GitHub Actions one-file build | Partially implemented |
+| Browser extension management UI | Opt-in local MV3 folder/ZIP import and attach | Basic implemented; marketplace/update missing |
+| Windows installer, signed EXE, automatic updates | CI tests only, release gate enforced | Not implemented/release on hold |
 | AI workflow assistant | No AI or external account required | Planned |
 
 **No anti-detection guarantee:** IP, browser configuration and profile separation do not imply immunity to platform security systems. Use with sites you are authorized to access and comply with their terms. This repo does not implement CAPTCHA bypass, account farming or platform evasion.
@@ -130,3 +130,7 @@ For public-source feature comparisons and Sybil limitations, see [`docs/GENLOGIN
 The current source adds a local Manifest V3 extension manager (manual ZIP/unpacked folder import, permission review, per-Chromium-profile attach/detach) and a sequential visual workflow builder (edit, duplicate, drag reorder, import/export validated JSON steps). Chrome/Edge no longer support command-line extension sideloading via the old flags. Use Playwright-managed Chromium for these manual extensions; an extension package is arbitrary executable code and should only be installed after reviewing its provenance and requested permissions.
 
 The repo's Windows workflow is now **test-only**, with an explicit real Chromium isolation smoke lane. Do **not** interpret passing unit tests as an endorsement of production readiness or GenLogin/Titan feature equivalence. See [strict release gates](docs/RELEASE_GATES.md), [feature matrix](docs/FEATURE_MATRIX.md), [license and engine notes](docs/ENGINE_LICENSING.md).
+
+## 2026-11-19 engineering audit
+
+See [audit remediation report](docs/AUDIT_2026-11-19.md) for exact regression tests, unresolved risks and verification status. Fixes were based on the source at commit `3d6367f81162`; the original reproduction script path belonged to another environment and was not available for execution here.

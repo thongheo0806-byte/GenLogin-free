@@ -13,7 +13,7 @@
 ## Explicit limitations
 
 - Browser identity settings do not imply fingerprint anonymity or prevent correlating accounts.
-- The GitHub Actions self-check covers packaged module import and local DB, **not** an interactive browser launch or platform leak audit.
+- The GitHub Actions self-check covers module import and local DB; browser integration checks are distinct and do **not** establish platform leak auditing.
 - No cloud data loss recovery, sync encryption, automated secret backups or security certification.
 - There is no password to open the main app. Anyone with access to the logged-in Windows session may operate its profiles.
 
@@ -31,3 +31,13 @@
 - `extract_text` workflow logs only the text length, not site content, to reduce secret exposure.
 - The automated Windows CI runs synthetic local web pages with no real accounts. This does not prove Titan-style fingerprinting or Sybil resistance.
 - No EXE is produced until the documented release gates are met.
+
+## 2026-11-19 audit remediation (development only)
+
+- `--doctor` / `--doctor-json` read metadata without creating a missing database, even when the normal app would fail initialization. `Path.as_uri()` avoids misparsing `#`, `?` and `%` in folder names. The disk-writability check uses and immediately closes a temporary file, not the SQLite database.
+- Browser workers periodically pump Playwright events and observe `BrowserContext` close instead of waiting indefinitely on the command queue. A real-`BrowserManager` Chromium CI test was added; manual-close behavior is additionally tested using a deterministic stub.
+- Deletion uses same-volume staging moves, database transaction and best-effort post-commit cleanup. Failure before commit restores original browsing directories; failed cleanup after commit is reported in diagnostics as quarantined data. Credentials are removed only after the metadata delete succeeds.
+- Credential editing follows a compensating transaction: database first, OS vault second; a vault error triggers metadata restoration. OS vault + SQLite cannot provide atomic transactions across both stores.
+- `extract_text` output is bounded and available from the authenticated local API in process memory. Those values may contain account secrets or sensitive content; never log them or expose the token.
+- Chromium's documented SOCKS5 proxy implementation does **not** support username/password authentication (see https://chromium.googlesource.com/chromium/src/+/main/net/docs/proxy.md). Authenticated SOCKS5 settings are rejected rather than advertised as supported.
+- SQLite `user_version=1` is now recorded. This is the baseline for future migrations, **not** a complete migration suite.

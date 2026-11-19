@@ -50,6 +50,7 @@ class StepDialog(tk.Toplevel):
         self.fields.pack(fill="both", expand=True)
         self.inputs = {}
         self.initial = initial or {}
+        self._field_cache = dict(self.initial)
         self.render()
         foot = ttk.Frame(body)
         foot.pack(fill="x", pady=(12, 0))
@@ -58,13 +59,13 @@ class StepDialog(tk.Toplevel):
         self.protocol("WM_DELETE_WINDOW", self.destroy)
 
     def render(self):
-        cached = {k: v.get() for k, v in getattr(self, "inputs", {}).items()}
+        self._field_cache.update({k: v.get() for k, v in getattr(self, "inputs", {}).items()})
         for child in self.fields.winfo_children():
             child.destroy()
         self.inputs = {}
         for key in FIELDS[self.action.get()]:
             ttk.Label(self.fields, text=key.replace("_", " ").capitalize()).pack(anchor="w", pady=(2, 4))
-            var = tk.StringVar(value=str(self.initial.get(key, cached.get(key, DEFAULTS.get(key, "")))))
+            var = tk.StringVar(value=str(self._field_cache.get(key, DEFAULTS.get(key, ""))))
             ttk.Entry(self.fields, textvariable=var).pack(fill="x", pady=(0, 10))
             self.inputs[key] = var
 

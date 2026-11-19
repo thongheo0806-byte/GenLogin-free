@@ -38,7 +38,8 @@ class LocalAPI:
 
             def _authorized(self):
                 actual = self.headers.get("Authorization", "")
-                if not hmac.compare_digest(actual, "Bearer " + controller.token):
+                # compare_digest(str, str) rejects non-ASCII; bytes avoid a dropped connection.
+                if not hmac.compare_digest(actual.encode("utf-8"), ("Bearer " + controller.token).encode("utf-8")):
                     self._json(401, {"error": "Unauthorized"})
                     return False
                 return True
@@ -54,6 +55,24 @@ class LocalAPI:
                         {"id": p.id, "name": p.name, "group": p.group_name, "running": controller.manager.active(p.id)}
                         for p in controller.store.all()
                     ]})
+                elif len(path.strip("/").split("/")) == 5 and path.endswith("/runs/latest"):
+                    parts = path.strip("/").split("/")
+                    if parts[:2] != ["v1", "profiles"]:
+                        self._json(404, {"error": "Not found"})
+                        return
+                    try:
+                        pid = controller.store.get(parts[2]).id
+                    except KeyError:
+                        self._json(404, {"error": "Profile not found"})
+                        return
+                    except ValueError:
+                        self._json(400, {"error": "Invalid profile ID"})
+                        return
+                    result = controller.manager.last_run(pid)
+                    if result is None:
+                        self._json(404, {"error": "No recent workflow run"})
+                    else:
+                        self._json(200, {"run": result})
                 else:
                     self._json(404, {"error": "Not found"})
 
@@ -61,23 +80,23 @@ class LocalAPI:
                 if not self._authorized():
                     return
                 try:
-                    if int(self.headers.get("Content-Length", "0")) > 32768:
-                        raise ValueError("Payload too large")
                     content_length = int(self.headers.get("Content-Length", "0"))
-                    if content_length < 0:
-                        raise ValueError("Invalid request length")
+                    if content_length < 0 or content_length > 32768:
+                        raise ValueError("Invalid request length or payload too large")
                     data = json.loads(self.rfile.read(content_length) or b"{}")
                     parts = urlparse(self.path).path.strip("/").split("/")
                     if len(parts) != 4 or parts[:2] != ["v1", "profiles"]:
                         self._json(404, {"error": "Not found"})
                         return
                     pid, action = parts[2:]
-                    controller.store.get(pid)
+                    pid = controller.store.get(pid).id
                     if action == "open":
                         controller.manager.start(pid)
                     elif action == "stop":
                         controller.manager.stop(pid)
                     elif action == "run":
+                        if not isinstance(data, dict) or "steps" not in data:
+                            raise ValueError("Missing required field: steps")
                         controller.manager.run_steps(pid, data["steps"])
                     elif action == "cancel":
                         controller.manager.cancel(pid)
@@ -88,7 +107,7 @@ class LocalAPI:
                 except (ValueError, TypeError, json.JSONDecodeError) as exc:
                     self._json(400, {"error": str(exc)[:200]})
                 except KeyError:
-                    self._json(404, {"error": "Profile not found or required field missing"})
+                    self._json(404, {"error": "Profile not found"})
 
         self.server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
         self.thread = threading.Thread(target=self.server.serve_forever, name="local-api", daemon=True)

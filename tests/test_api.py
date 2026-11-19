@@ -23,6 +23,8 @@ class StubManager:
         pass
     def run_steps(self, _, __):
         pass
+    def last_run(self, _):
+        return None
 
 
 class APITests(unittest.TestCase):
@@ -59,6 +61,27 @@ class APITests(unittest.TestCase):
         missing = "/v1/profiles/00000000-0000-0000-0000-000000000000/open"
         with self.assertRaises(HTTPError) as ctx:
             self.request(missing, token=self.api.token, method="POST", data={})
+        self.assertEqual(ctx.exception.code, 404)
+
+    def test_unicode_authorization_header_returns_401_not_disconnect(self):
+        with self.assertRaises(HTTPError) as ctx:
+            self.request("/v1/health", token="é")
+        self.assertEqual(ctx.exception.code, 401)
+
+    def test_missing_workflow_steps_is_400_not_404(self):
+        endpoint = f"/v1/profiles/{self.profile.id}/run"
+        with self.assertRaises(HTTPError) as ctx:
+            self.request(endpoint, token=self.api.token, method="POST", data={})
+        self.assertEqual(ctx.exception.code, 400)
+
+    def test_invalid_profile_id_is_400(self):
+        with self.assertRaises(HTTPError) as ctx:
+            self.request("/v1/profiles/not-a-uuid/run", token=self.api.token, method="POST", data={"steps": []})
+        self.assertEqual(ctx.exception.code, 400)
+
+    def test_last_run_endpoint_is_authenticated(self):
+        with self.assertRaises(HTTPError) as ctx:
+            self.request(f"/v1/profiles/{self.profile.id}/runs/latest", token=self.api.token)
         self.assertEqual(ctx.exception.code, 404)
 
     def test_requires_auth_for_mutations(self):

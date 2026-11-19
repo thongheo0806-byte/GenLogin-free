@@ -70,6 +70,44 @@ class BrowserIntegrationTests(unittest.TestCase):
 
 
 
+    def test_real_browsermanager_workflow_and_lifecycle(self):
+        """Unlike earlier direct Playwright tests, exercise browser.py itself."""
+        from autumn_genlogin.browser import BrowserManager
+        from autumn_genlogin.models import Profile
+        from autumn_genlogin.storage import Store
+        with tempfile.TemporaryDirectory() as base:
+            store=Store(Path(base))
+            server=ThreadingHTTPServer(("127.0.0.1",0), Fixture)
+            thread=threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                origin=f"http://127.0.0.1:{server.server_address[1]}"
+                profile=store.save(Profile(name="BrowserManager fixture", browser="chromium", start_url=origin))
+                manager=BrowserManager(store, headless=True)
+                manager.start(profile.id)
+                def await_condition(condition, seconds=20):
+                    deadline=time.monotonic()+seconds
+                    while time.monotonic()<deadline:
+                        if condition(): return True
+                        time.sleep(.05)
+                    return False
+                try:
+                    self.assertTrue(await_condition(lambda: any(item[1]=="status" and item[2]=="Running" for item in list(manager.events.queue))),
+                                    f"Browser failed to open: {list(manager.events.queue)}")
+                    manager.run_steps(profile.id,[{"action":"wait_for","selector":"h1"},
+                                                   {"action":"extract_text","selector":"h1"}])
+                    self.assertTrue(await_condition(lambda: (manager.last_run(profile.id) or {}).get("status") in {"succeeded","failed","cancelled"}),
+                                    f"Workflow never completed: {manager.last_run(profile.id)}")
+                    run=manager.last_run(profile.id)
+                    self.assertEqual(run["status"],"succeeded",run)
+                    self.assertEqual(run["extracted"][0]["text"],"Local fixture")
+                finally:
+                    manager.stop_all()
+                    self.assertTrue(await_condition(lambda: manager.count()==0),"BrowserManager worker/lease not released")
+            finally:
+                server.shutdown()
+                server.server_close()
+
     def test_real_chromium_loads_opt_in_mv3_extension(self):
         import json
         from playwright.sync_api import sync_playwright

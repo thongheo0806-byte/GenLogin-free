@@ -153,6 +153,7 @@ class ExtensionLibrary:
         return self._install(source, archive=True)
 
     def attach(self, profile_id: str, extension_id: str) -> None:
+        profile_id = str(UUID(profile_id))
         profile = self.store.get(profile_id)
         extension_id = str(UUID(extension_id))
         if profile.browser != "chromium":
@@ -172,10 +173,12 @@ class ExtensionLibrary:
             return [r[0] for r in conn.execute("SELECT extension_id FROM profile_extensions WHERE profile_id=? ORDER BY extension_id", (profile_id,))]
 
     def _get(self, extension_id: str) -> ExtensionRecord:
-        entries = [r for r in self.list() if r.id == extension_id]
-        if not entries:
+        with self.store._connect() as conn:
+            row = conn.execute("SELECT * FROM extension_packages WHERE id=?", (str(UUID(extension_id)),)).fetchone()
+        if row is None:
             raise KeyError("Extension not found")
-        return entries[0]
+        return ExtensionRecord(row["id"], row["name"], row["version"],
+                               tuple(json.loads(row["permissions"])), tuple(json.loads(row["host_permissions"])))
 
     def paths_for(self, profile_id: str) -> list[Path]:
         profile = self.store.get(profile_id)
