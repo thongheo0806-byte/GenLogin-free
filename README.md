@@ -4,7 +4,7 @@
 
 **Free, local-first browser profile studio for Windows**. This is an independent open-source implementation inspired by the *category* of browser profile managers. **Not affiliated with GenLogin; not a clone of its proprietary browser engine.**
 
-**Project status: v0.5.0-dev (2026-11-19), incomplete feature parity.** This development branch adds a sequential visual workflow builder, opt-in local Manifest V3 extensions for Playwright Chromium, and Windows browser/GUI integration tests. The release build is disabled; a passing test is not an approval to ship.
+**Project status: v0.5.0-dev (2026-11-19), incomplete feature parity.** This development branch includes a draggable node graph, recorder, opt-in encrypted team metadata hub, durable local scheduler, five engine adapters, shared Playwright driver and Windows regression tests. The release build is disabled; a passing test is not an approval to ship.
 
 
 ## v0.5-dev functional expansion (source only)
@@ -16,7 +16,7 @@
 - **Five browser engines:** Playwright Chromium, Chrome, Edge, Firefox and WebKit are selectable. For Firefox/WebKit run `python -m playwright install firefox webkit`. Only bundled Chromium supports unpacked extensions. See [0.5 feature/evidence matrix](docs/FEATURES_050.md).
 - **Performance architecture:** a single asynchronous Playwright driver runs independent contexts, rather than one Node driver per profile. SQLite connection reuse is enabled in the desktop app and is scoped to individual threads.
 
-**Important:** These additions are not evidence of full GenLogin/Titan feature equivalence. There is **no new EXE build**. See [Titan evidence protocol](docs/TITAN_VERIFICATION_PROTOCOL.md) and [release gates](docs/RELEASE_GATES.md).
+**Important:** These additions are not evidence of full GenLogin/Titan feature equivalence. There is **no new EXE build**. See [public GenLogin feature-parity assessment](docs/GENLOGIN_TITAN_ASSESSMENT.md), [Titan evidence protocol](docs/TITAN_VERIFICATION_PROTOCOL.md) and [release gates](docs/RELEASE_GATES.md).
 
 ## Current features
 
@@ -30,7 +30,7 @@
 - Save screenshots in a per-profile local directory.
 - Opt-in, loopback-only HTTP API with a fresh bearer token per startup. **Off by default**.
 - SQLite metadata stored locally, no subscription or mandatory cloud login. Optional self-hosted encrypted metadata/workflow sync is disabled by default.
-- The Windows GitHub Actions workflow performs unit/GUI tests and headless real-Chromium integration checks; **EXE building and publishing are disabled** pending documented feature parity.
+- Windows GitHub Actions tests unit/GUI structure and real Chromium, Chrome, Edge, Firefox and WebKit smoke; **EXE building and publishing remain disabled** until documented feature parity is evidenced.
 
 ## Quick start: Windows (source)
 
