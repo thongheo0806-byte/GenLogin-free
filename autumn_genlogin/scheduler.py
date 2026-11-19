@@ -98,18 +98,48 @@ class ScheduleStore:
                     # Skip missed intervals instead of backfilling thousands of jobs.
                     skips = max(1, int((now-previous).total_seconds()//interval)+1)
                     next_time = iso(previous + timedelta(seconds=skips*interval))
-                    c.execute("UPDATE schedules SET next_run_utc=?,last_status='dispatched',last_error='' WHERE id=?",
+                    c.execute("UPDATE schedules SET next_run_utc=?,last_status='dispatch_pending',last_error='' WHERE id=?",
                               (next_time,r["id"]))
                 else:
-                    c.execute("UPDATE schedules SET enabled=0,last_status='dispatched',last_error='' WHERE id=?",(r["id"],))
+                    c.execute("UPDATE schedules SET enabled=0,last_status='dispatch_pending',last_error='' WHERE id=?",(r["id"],))
                 claimed.append(Job(id=r["id"],profile_id=r["profile_id"],workflow=json.loads(r["workflow_json"]),
                                    next_run_utc=r["next_run_utc"],interval_seconds=interval,
-                                   enabled=bool(interval),last_status="dispatched",last_error=""))
+                                   enabled=bool(interval),last_status="dispatch_pending",last_error=""))
         return claimed
+
+    def record_dispatched(self, job_id: str) -> None:
+        """The browser manager accepted the job; execution may still fail.
+
+        This is intentionally *not* a 'succeeded' state. If the process dies
+        between claim and acknowledgement, 'dispatch_pending' remains visible.
+        An uncertain task must not be silently replayed.
+        """
+        with self.store._connect() as c:
+            c.execute("UPDATE schedules SET last_status='submitted',last_error='' "
+                      "WHERE id=? AND last_status='dispatch_pending'", (job_id,))
 
     def record_error(self, job_id: str, error: str) -> None:
         with self.store._connect() as c:
             c.execute("UPDATE schedules SET last_status='error',last_error=? WHERE id=?", (error[:400],job_id))
+
+    def retry_one_shot(self, job_id: str, now: datetime | None = None) -> None:
+        """Re-arm failed/uncertain one-shots only after user confirmation.
+
+        An uncertain dispatch might have started before the previous process
+        died, so callers must explain the possible duplicate execution.
+        """
+        job_id = str(UUID(job_id))
+        next_run = iso(now or utcnow())
+        with self.store._connect() as c:
+            c.execute("BEGIN IMMEDIATE")
+            row = c.execute("SELECT enabled,interval_seconds,last_status FROM schedules WHERE id=?",
+                            (job_id,)).fetchone()
+            if row is None:
+                raise KeyError("Schedule does not exist")
+            if row["enabled"] or row["interval_seconds"] is not None or row["last_status"] not in {"error","dispatch_pending"}:
+                raise ValueError("Only failed or uncertain one-time jobs can be retried")
+            c.execute("UPDATE schedules SET enabled=1,next_run_utc=?,last_status='pending',last_error='' WHERE id=?",
+                      (next_run,job_id))
 
 
 class Scheduler:
@@ -136,9 +166,14 @@ class Scheduler:
             while not self._stop.is_set():
                 try:
                     for job in self.store.claim_due():
-                        try: self.dispatch(job.profile_id, job.workflow)
-                        except (RuntimeError, OSError, ValueError, KeyError) as exc:
+                        try:
+                            self.dispatch(job.profile_id, job.workflow)
+                        except Exception as exc:
+                            # An error in browser submission is recorded. Do not
+                            # auto-retry: the callback may have started the job.
                             self.store.record_error(job.id, f"{type(exc).__name__}: {exc}")
+                        else:
+                            self.store.record_dispatched(job.id)
                 except sqlite3.Error:
                     # A locked or temporarily unavailable database must not kill
                     # the scheduler thread; the GUI diagnostics remains available.

@@ -537,13 +537,16 @@ class App:
         ttk.Entry(box, textvariable=self.schedule_interval, width=7).pack(side="left", padx=8)
         ttk.Button(box, text="Schedule selected workflow", command=self.schedule_workflow).pack(side="left", padx=8)
         ttk.Button(box, text="Delete selected", command=self.remove_schedule).pack(side="left", padx=8)
+        ttk.Button(box, text="Retry failed/uncertain", command=self.retry_schedule).pack(side="left", padx=8)
         ttk.Button(box, text="Refresh", command=self.refresh_schedules).pack(side="left")
         self.schedule_tree = ttk.Treeview(frame, columns=("profile","due","interval","status"), show="headings")
         for column in ("profile","due","interval","status"):
             self.schedule_tree.heading(column, text=column.title())
             self.schedule_tree.column(column, width=250 if column == "profile" else 170)
         self.schedule_tree.pack(fill="both", expand=True)
-        ttk.Label(frame, text="Tasks run only while AutumnGenLogin is open. Misfires are skipped, not replayed in bulk.",style="Muted.TLabel").pack(anchor="w", pady=8)
+        ttk.Label(frame, text="Tasks run only while AutumnGenLogin is open. Submitted means accepted, not finished.\n"
+                  "Dispatch pending means execution is uncertain; never automatically replay a one-time job.",
+                  style="Muted.TLabel").pack(anchor="w", pady=8)
         self.refresh_schedules()
 
     def refresh_schedules(self):
@@ -573,6 +576,26 @@ class App:
         selection=self.schedule_tree.selection()
         if selection:
             self.schedule_store.remove(selection[0]);self.refresh_schedules()
+
+    def retry_schedule(self):
+        selection=self.schedule_tree.selection()
+        if not selection:
+            return
+        # A crash after the browser accepted a job but before the database
+        # acknowledged it makes execution uncertain. Require explicit consent.
+        if not messagebox.askyesno("Retry scheduled task",
+                                   "Retry only a failed/uncertain one-time task.\n\n"
+                                   "WARNING: an uncertain task may already have started, "
+                                   "so retrying could perform the operation twice.\n\n"
+                                   "Do you want to retry?",
+                                   parent=self.root):
+            return
+        try:
+            self.schedule_store.retry_one_shot(selection[0])
+            self.refresh_schedules()
+            self.notice("One-time schedule queued for explicit retry")
+        except Exception as exc:
+            messagebox.showerror("Schedule retry", str(exc), parent=self.root)
 
     def _build_cloud_tab(self,frame):
         ttk.Label(frame, text="Opt-in encrypted metadata & workflow team sync",style="Heading.TLabel").pack(anchor="w", pady=8)
