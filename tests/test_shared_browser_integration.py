@@ -56,11 +56,21 @@ class SharedBrowserRealTests(unittest.TestCase):
 
     def tearDown(self):
         self.manager.stop_all()
-        eventually(lambda:self.manager.count()==0,timeout=15)
-        try:self.manager.close_driver()
-        except RuntimeError:pass
+        self.assertTrue(eventually(lambda:self.manager.count()==0,timeout=20),
+                        "Browser sessions did not close and release locks")
+        self.manager.close_driver()
         self.server.shutdown();self.server.server_close()
-        self.tmp.cleanup()
+        self.thread.join(timeout=5)
+        # Chromium can still be releasing WebStorage files on Windows after
+        # the transport shuts down. Retry only the filesystem cleanup; fail
+        # explicitly if locks persist. Never silently ignore leaked sessions.
+        for attempt in range(25):
+            try:
+                self.tmp.cleanup()
+                break
+            except PermissionError:
+                if attempt == 24: raise
+                time.sleep(0.2)
 
     def test_two_profiles_share_one_driver_and_graph_executes(self):
         profiles=[]
@@ -94,9 +104,12 @@ class SharedBrowserRealTests(unittest.TestCase):
             await page.locator("#press").click()
             await page.locator("#secret").fill("do-not-record-password")
             await page.locator("#secret").dispatch_event("change")
+            await page.locator("#category").select_option("sensitive-unique-option")
         self.manager._submit(perform()).result(timeout=20)
         self.assertTrue(eventually(lambda:len(self.manager.recorded_steps(profile.id))>=2))
         self.assertNotIn("do-not-record-password",str(self.manager.recorded_steps(profile.id)))
+        self.assertNotIn("sensitive-unique-option",str(self.manager.recorded_steps(profile.id)))
+        self.assertTrue(any(s.get("value")=="REVIEW_OPTION" for s in self.manager.recorded_steps(profile.id)))
         self.manager.stop_recording(profile.id)
         # Mimic the user closing the last window: do not call manager.stop().
         async def user_close():

@@ -206,7 +206,10 @@ class TeamHub:
 
 
 class HubHTTPServer(ThreadingHTTPServer):
-    daemon_threads=True
+    # Request handlers own short-lived SQLite connections. Windows cannot
+    # delete the hub database while a daemon request thread remains alive.
+    daemon_threads=False
+    block_on_close=True
     def __init__(self,address,hub:TeamHub):
         host=address[0]
         if host not in {"127.0.0.1","::1","localhost"}:

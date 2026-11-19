@@ -59,7 +59,7 @@ RECORD_SCRIPT = r"""(() => {
     if (!el || !el.tagName) return;
     const s=selector(el);
     if (!s) return;
-    if (el.tagName==='SELECT') return send({action:'select_option',selector:s,value:String(el.value).slice(0,256)});
+    if (el.tagName==='SELECT') return send({action:'select_option',selector:s,value:'REVIEW_OPTION'}); // option values can contain PII
     if (el.type==='checkbox') return send({action:el.checked?'check':'uncheck',selector:s});
     if (el.tagName==='INPUT' || el.tagName==='TEXTAREA')
       send({action:'fill',selector:s,text:''}); // NEVER record passwords, secrets or PII.
@@ -130,7 +130,12 @@ class SharedBrowserManager:
             for task in tasks: task.cancel()
             if tasks:
                 loop.run_until_complete(asyncio.gather(*tasks,return_exceptions=True))
-            try: loop.run_until_complete(self._playwright.stop())
+            if self._playwright is not None:
+                try: loop.run_until_complete(self._playwright.stop())
+                except Exception: pass
+                self._playwright = None
+            # Drain subprocess/pipe callbacks before closing the Proactor loop.
+            try: loop.run_until_complete(asyncio.sleep(0.4))
             except Exception: pass
             loop.close()
 
@@ -233,9 +238,32 @@ class SharedBrowserManager:
         for pid in ids:self.stop(pid)
 
     def close_driver(self):
-        if self.count(): raise RuntimeError("Close profiles before stopping driver")
-        if self._loop and self._loop.is_running():self._loop.call_soon_threadsafe(self._loop.stop)
-        if self._thread:self._thread.join(timeout=10)
+        """Gracefully stop the shared Playwright subprocess before closing its loop.
+
+        An abruptly stopped Windows Proactor loop can leave Chromium profile files
+        locked even after the last context has reported closed. Waiting for the
+        async driver shutdown to finish is a correctness requirement, not a sleep
+        substituted for cancellation.
+        """
+        if self.count():
+            raise RuntimeError("Close profiles before stopping driver")
+        loop = self._loop
+        if loop and loop.is_running():
+            async def finalize():
+                if self._playwright is not None:
+                    driver = self._playwright
+                    await driver.stop()
+                    self._playwright = None
+                # Allow Windows Proactor pipe close callbacks to run while
+                # the event loop is still alive.
+                await asyncio.sleep(0.4)
+            future = asyncio.run_coroutine_threadsafe(finalize(), loop)
+            future.result(timeout=20)
+            loop.call_soon_threadsafe(loop.stop)
+        if self._thread:
+            self._thread.join(timeout=15)
+            if self._thread.is_alive():
+                raise RuntimeError("Shared Playwright driver did not shut down")
 
     def run_steps(self,pid:str,steps:object):
         self._enqueue(pid,validated_steps(steps),"steps")

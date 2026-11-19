@@ -46,14 +46,20 @@ class EncryptionTests(unittest.TestCase):
 class TeamHTTPTests(unittest.TestCase):
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
         hub=TeamHub(Path(self.tmp.name)/"team.sqlite3")
         self.server=HubHTTPServer(("127.0.0.1",0),hub)
         self.thread=threading.Thread(target=self.server.serve_forever,daemon=True)
         self.thread.start()
-        self.addCleanup(self.server.server_close)
-        self.addCleanup(self.server.shutdown)
         self.base=f"http://127.0.0.1:{self.server.server_port}"
+
+    def tearDown(self):
+        # shutdown only stops serve_forever; server_close joins all non-daemon
+        # request handlers before Windows is asked to delete its SQLite file.
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=5)
+        self.assertFalse(self.thread.is_alive(), "Team hub listener did not exit")
+        self.tmp.cleanup()
 
     def test_roles_conflicts_and_encrypted_document(self):
         alice=CloudClient(self.base)
