@@ -122,6 +122,20 @@ class SharedBrowserRealTests(unittest.TestCase):
         self.assertTrue(eventually(lambda:(x:=self.manager._sessions.get(profile.id)) is not None and x.ready.is_set()))
         self.manager.stop(profile.id)
 
+    def test_branded_chrome_and_edge_smoke(self):
+        if os.environ.get("AUTUMN_BRANDED_ENGINE") != "1":
+            self.skipTest("requires installed Google Chrome and Microsoft Edge")
+        for engine in ("chrome", "msedge"):
+            with self.subTest(engine=engine):
+                profile=self.store.save(Profile(name=engine,browser=engine,start_url=self.origin))
+                self.manager.start(profile.id)
+                self.assertTrue(eventually(lambda:((x:=self.manager._sessions.get(profile.id)) is not None and x.ready.is_set())
+                                    or not self.manager.active(profile.id),timeout=35),
+                                f"{engine} did not resolve startup")
+                self.assertTrue(self.manager.active(profile.id),f"{engine} browser closed unexpectedly")
+                self.manager.stop(profile.id)
+                self.assertTrue(eventually(lambda:not self.manager.active(profile.id),timeout=25))
+
     def test_multiengine_launch_smoke(self):
         if os.environ.get("AUTUMN_MULTI_ENGINE")!="1":self.skipTest("requires Firefox and WebKit binaries")
         for engine in ("firefox","webkit"):

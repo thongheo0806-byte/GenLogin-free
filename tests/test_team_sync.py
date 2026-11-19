@@ -101,6 +101,31 @@ class TeamHTTPTests(unittest.TestCase):
             raw=c.execute("SELECT blob FROM documents").fetchone()[0]
             self.assertNotIn("profile-metadata-1",raw)
 
+    def test_parallel_revision_conflict_is_atomic(self):
+        alice=CloudClient(self.base)
+        alice.register("alice","alice_secure_password_123")
+        alice.login("alice","alice_secure_password_123")
+        team=alice.create_team("Concurrency test")
+        barrier=threading.Barrier(3)
+        results=[]
+        lock=threading.Lock()
+        def writer():
+            client=CloudClient(self.base)
+            client.login("alice","alice_secure_password_123")
+            barrier.wait(timeout=10)
+            try:
+                result=client.push(team,"profiles",0,{"format":"test","profiles":[]},"shared passphrase_123")
+            except HubError as exc:
+                result=exc.status
+            with lock:
+                results.append(result)
+        threads=[threading.Thread(target=writer) for _ in range(2)]
+        for t in threads:t.start()
+        barrier.wait(timeout=10)
+        for t in threads:t.join(timeout=15)
+        self.assertTrue(all(not t.is_alive() for t in threads))
+        self.assertEqual(sorted(results),[1,409])
+
     def test_remote_http_rejected(self):
         with self.assertRaises(ValueError):CloudClient("http://example.com")
         with self.assertRaises(ValueError):HubHTTPServer(("0.0.0.0",0),TeamHub(Path(self.tmp.name)/"other.sqlite"))
