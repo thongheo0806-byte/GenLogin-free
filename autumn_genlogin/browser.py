@@ -17,6 +17,7 @@ from .storage import Store
 
 class BrowserManager:
     MAX_BROWSERS = 6
+    RUN_RESULT_TTL_SECONDS = 15 * 60
 
     def __init__(self, store: Store, *, headless: bool = False):
         self.store = store
@@ -30,6 +31,7 @@ class BrowserManager:
         self._cancel: dict[str, threading.Event] = {}
         # Last workflow only, bounded and held in memory. Never written to logs.
         self._runs: dict[str, dict] = {}
+        self._run_timestamps: dict[str, float] = {}
 
     def active(self, profile_id: str) -> bool:
         with self._lock:
@@ -77,6 +79,7 @@ class BrowserManager:
             self._runs[profile_id] = {"id": str(uuid4()), "status": "queued",
                                       "total_steps": len(validated), "extracted": [],
                                       "error": None}
+            self._run_timestamps[profile_id] = time.monotonic()
             self._workers[profile_id][1].put(("automation", validated))
 
     def cancel(self, profile_id: str) -> None:
@@ -86,12 +89,17 @@ class BrowserManager:
 
     def last_run(self, profile_id: str) -> dict | None:
         with self._lock:
+            when = self._run_timestamps.get(profile_id)
+            if when is not None and time.monotonic() - when >= self.RUN_RESULT_TTL_SECONDS:
+                self._runs.pop(profile_id, None)
+                self._run_timestamps.pop(profile_id, None)
             result = self._runs.get(profile_id)
             return deepcopy(result) if result is not None else None
 
     def clear_run(self, profile_id: str) -> None:
         with self._lock:
             self._runs.pop(profile_id, None)
+            self._run_timestamps.pop(profile_id, None)
 
     def _run_status(self, profile_id: str, status: str, error: str | None = None) -> None:
         with self._lock:
@@ -117,6 +125,8 @@ class BrowserManager:
                 self._workers.pop(profile.id, None)
                 self._active.discard(profile.id)
                 self._cancel.pop(profile.id, None)
+                self._runs.pop(profile.id, None)
+                self._run_timestamps.pop(profile.id, None)
             self.events.put((profile.id, "status", "Stopped"))
 
     def _run_session(self, profile: Profile, cmds: queue.Queue, cancel: threading.Event) -> None:
@@ -175,7 +185,7 @@ class BrowserManager:
                     self.events.put((pid, "status", "Running"))
                     while not browser_closed.is_set():
                         try:
-                            command, payload = cmds.get(timeout=0.15)
+                            command, payload = cmds.get(timeout=0.35)
                         except queue.Empty:
                             # A user closing the final browser window may leave
                             # an otherwise idle command worker waiting forever.
@@ -183,7 +193,7 @@ class BrowserManager:
                                 pages = context.pages
                                 if not pages:
                                     break
-                                pages[0].wait_for_timeout(20)
+                                pages[0].wait_for_timeout(30)
                             except Exception as exc:
                                 if browser_closed.is_set() or self._is_target_closed(exc):
                                     break
@@ -225,13 +235,19 @@ class BrowserManager:
                 self._workers.pop(pid, None)
                 self._active.discard(pid)
                 self._cancel.pop(pid, None)
+                self._runs.pop(pid, None)  # browser exit revokes extracted content
+                self._run_timestamps.pop(pid, None)
             self.events.put((pid, "status", "Stopped"))
 
     @staticmethod
     def _is_target_closed(exc: Exception) -> bool:
-        # Do not depend on Playwright internals (or its exact exception class).
-        return "closed" in str(exc).lower() and any(
-            word in str(exc).lower() for word in ("target", "browser", "context", "page"))
+        # The concrete Playwright exception avoids misclassifying e.g. a failed
+        # selector saying 'closed page' as a browser shutdown.
+        try:
+            from playwright._impl._errors import TargetClosedError
+            return isinstance(exc, TargetClosedError)
+        except ImportError:
+            return False
 
     @staticmethod
     def _safe_error(exc: Exception, password: str) -> str:

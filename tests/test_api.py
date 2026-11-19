@@ -2,6 +2,8 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
+import sqlite3
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
@@ -83,6 +85,19 @@ class APITests(unittest.TestCase):
         with self.assertRaises(HTTPError) as ctx:
             self.request(f"/v1/profiles/{self.profile.id}/runs/latest", token=self.api.token)
         self.assertEqual(ctx.exception.code, 404)
+
+    def test_database_error_returns_http_503_on_list(self):
+        with patch.object(self.store, "all", side_effect=sqlite3.DatabaseError("corrupt")):
+            with self.assertRaises(HTTPError) as err:
+                self.request("/v1/profiles", token=self.api.token)
+            self.assertEqual(err.exception.code, 503)
+            self.assertNotIn("corrupt", err.exception.read().decode())
+
+    def test_database_error_returns_http_503_on_mutation(self):
+        with patch.object(self.store, "get", side_effect=sqlite3.DatabaseError("corrupt")):
+            with self.assertRaises(HTTPError) as err:
+                self.request(f"/v1/profiles/{self.profile.id}/open", token=self.api.token, method="POST", data={})
+            self.assertEqual(err.exception.code, 503)
 
     def test_requires_auth_for_mutations(self):
         path = "/v1/profiles/" + self.profile.id + "/open"

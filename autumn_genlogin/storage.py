@@ -9,6 +9,8 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import UUID, uuid4
+import re
+from .locks import ProfileBusyError
 
 from .models import Profile
 from .locks import ProfileLease
@@ -55,6 +57,9 @@ class Store:
             )""")
             if version == 0:
                 conn.execute("PRAGMA user_version=1")
+        # Only after successful catalog initialization; never purge uncommitted
+        # deletions or staging from a corrupt / incompatible database.
+        self.cleanup_staged_deletions()
 
     @contextmanager
     def _connect(self, *, readonly: bool = False):
@@ -87,6 +92,14 @@ class Store:
     def _save_with_connection(self, conn: sqlite3.Connection, profile: Profile) -> Profile:
         profile.id = str(UUID(profile.id))
         profile.validate()
+        if profile.browser != "chromium":
+            extension_table = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='profile_extensions'"
+            ).fetchone()
+            if extension_table and conn.execute(
+                "SELECT 1 FROM profile_extensions WHERE profile_id=? LIMIT 1", (profile.id,)
+            ).fetchone():
+                raise ValueError("Detach Chromium extensions before switching to Chrome/Edge")
         now = _utc()
         current = conn.execute("SELECT created_at FROM profiles WHERE id = ?", (profile.id,)).fetchone()
         profile.created_at = current[0] if current else (profile.created_at or now)
@@ -158,6 +171,40 @@ class Store:
             except OSError:
                 leftovers.append(str(moved))
         return leftovers
+
+    def cleanup_staged_deletions(self) -> dict[str, int]:
+        """Retry deleting quarantined data after crashes or Windows file locks.
+
+        Only files from the versioned legacy staging scheme are candidates.
+        When the profile is still in SQLite (possible crash before commit),
+        retain the data for recovery. Respect cross-process profile leases.
+        """
+        stage = self.base / "delete-staging"
+        summary = {"removed": 0, "pending": 0, "unsafe": 0}
+        if not stage.exists():
+            return summary
+        if stage.is_symlink() or not stage.is_dir():
+            summary["unsafe"] += 1
+            return summary
+        pattern = re.compile(r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$")
+        for path in stage.iterdir():
+            match = pattern.fullmatch(path.name)
+            if not match or path.is_symlink() or not path.is_dir():
+                summary["unsafe"] += 1
+                continue
+            pid = match.group(2)
+            try:
+                with ProfileLease(self.base, pid):
+                    with self._connect(readonly=True) as conn:
+                        exists = conn.execute("SELECT 1 FROM profiles WHERE id=?", (pid,)).fetchone()
+                    if exists:
+                        summary["pending"] += 1
+                        continue
+                    shutil.rmtree(path)
+                    summary["removed"] += 1
+            except (ProfileBusyError, OSError, sqlite3.Error):
+                summary["pending"] += 1
+        return summary
 
     def export_metadata(self, target: Path) -> int:
         profiles = [p.public_dict() for p in self.all()]

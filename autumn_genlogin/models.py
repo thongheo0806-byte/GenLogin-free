@@ -37,8 +37,16 @@ class Profile:
         if self.browser not in {"chrome", "msedge", "chromium"}:
             raise ValueError("Unknown browser engine")
         valid_http_url(self.start_url)
-        if not isinstance(self.locale, str) or not re.fullmatch(r"[a-z]{2,3}(?:-[A-Z][a-z]{3})?(?:-[A-Z]{2}|-[0-9]{3})?", self.locale):
-            raise ValueError("Locale must be a valid BCP-47 language/region tag (for example en-US)")
+        if not isinstance(self.locale, str) or not re.fullmatch(
+            r"[a-z]{2,3}(?:-[a-z]{4})?(?:-[a-z]{2}|-[0-9]{3})?", self.locale, re.IGNORECASE
+        ):
+            raise ValueError("Locale must be a valid language/region tag (for example vi-VN)")
+        # BCP-47 tags are case-insensitive; pass a canonical form to Chromium.
+        locale_parts = self.locale.split("-")
+        self.locale = "-".join([locale_parts[0].lower()] + [
+            part.title() if len(part) == 4 else part.upper() if len(part) == 2 else part
+            for part in locale_parts[1:]
+        ])
         if not isinstance(self.timezone_id, str) or len(self.timezone_id) > 100:
             raise ValueError("Invalid timezone")
         try:
@@ -52,8 +60,18 @@ class Profile:
         if self.proxy_scheme:
             if self.proxy_scheme not in {"http", "socks5"}:
                 raise ValueError("Proxy scheme must be http or socks5")
-            if not isinstance(self.proxy_host, str) or not self.proxy_host or any(c in self.proxy_host for c in " /\\@\n\r\t?#%"):
+            if not isinstance(self.proxy_host, str) or not self.proxy_host or any(c in self.proxy_host for c in " /\\@\n\r\t?#%[]"):
                 raise ValueError("Invalid proxy host")
+            try:
+                ip_address(self.proxy_host)  # IPv4/IPv6 literal
+            except ValueError:
+                # Strict ASCII DNS labels, optionally with one final root dot.
+                host = self.proxy_host.removesuffix(".")
+                labels = host.split(".")
+                if (len(host) > 253 or not host or all(c in "0123456789." for c in host)
+                    or any(not re.fullmatch(r"[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?", label)
+                           for label in labels)):
+                    raise ValueError("Proxy host must be a valid DNS name or IPv4/IPv6 literal")
             if not isinstance(self.proxy_port, int) or isinstance(self.proxy_port, bool) or not 1 <= self.proxy_port <= 65535:
                 raise ValueError("Proxy port out of range")
             if not isinstance(self.proxy_username, str):

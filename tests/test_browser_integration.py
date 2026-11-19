@@ -108,6 +108,60 @@ class BrowserIntegrationTests(unittest.TestCase):
                 server.shutdown()
                 server.server_close()
 
+    @unittest.skipUnless(os.name == "nt", "Windows process lifetime integration")
+    def test_browser_process_exit_releases_profile_manager_and_secret_results(self):
+        """Terminate ONLY our own Chromium process to simulate abrupt browser exit.
+
+        This is a forced-exit check, not a claim that user-initiated window close
+        behaves identically under every window manager.
+        """
+        import psutil
+        from autumn_genlogin.browser import BrowserManager
+        from autumn_genlogin.models import Profile
+        from autumn_genlogin.storage import Store
+        with tempfile.TemporaryDirectory() as base:
+            store = Store(Path(base) / "app")
+            profile = store.save(Profile(name="forced-close", browser="chromium", start_url="http://127.0.0.1:1"))
+            manager = BrowserManager(store, headless=True)
+            manager.start(profile.id)
+            try:
+                deadline = time.monotonic() + 25
+                while time.monotonic() < deadline:
+                    if any(evt[1] == "status" and evt[2] == "Running" for evt in list(manager.events.queue)):
+                        break
+                    time.sleep(.1)
+                else:
+                    self.fail(f"Browser did not start: {list(manager.events.queue)}")
+                manager._runs[profile.id] = {"status":"succeeded", "extracted":[{"text":"fixture secret"}]}
+                manager._run_timestamps[profile.id] = time.monotonic()
+                # Only kill a process commandline referencing this exact
+                # temporary profile user-data-dir, never an unrelated browser.
+                owned_dir = str(store.profile_path(profile.id)).lower()
+                matches = []
+                for process in psutil.process_iter(["pid", "name", "cmdline"]):
+                    try:
+                        cmdline = process.info["cmdline"] or []
+                        name = (process.info["name"] or "").lower()
+                        if ("chrome" in name or "chromium" in name or "headless" in name) and any(
+                            owned_dir in arg.lower() and "--user-data-dir" in arg.lower() for arg in cmdline
+                        ):
+                            matches.append(process)
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        continue
+                self.assertTrue(matches, "Could not locate the owned Chromium main process")
+                for process in matches:
+                    try:
+                        process.kill()
+                    except psutil.NoSuchProcess:
+                        pass
+                deadline = time.monotonic() + 20
+                while manager.active(profile.id) and time.monotonic() < deadline:
+                    time.sleep(.1)
+                self.assertFalse(manager.active(profile.id), "worker lease not released after browser process exit")
+                self.assertIsNone(manager.last_run(profile.id), "extracted text must not survive browser exit")
+            finally:
+                manager.stop_all()
+
     def test_real_chromium_loads_opt_in_mv3_extension(self):
         import json
         from playwright.sync_api import sync_playwright

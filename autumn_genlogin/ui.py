@@ -74,7 +74,7 @@ class ProfileEditor(tk.Toplevel):
         ttk.Label(proxy, text="Proxy password (stored in Windows Credential Manager)").pack(anchor="w", pady=(10, 4))
         self.secret_var = tk.StringVar()
         ttk.Entry(proxy, textvariable=self.secret_var, show="*").pack(fill="x")
-        ttk.Label(proxy, text="Leave blank to keep existing password.\nDisabling proxy deletes the saved password.", foreground=MUTED).pack(anchor="w", pady=(8, 0))
+        ttk.Label(proxy, text="Leave blank to keep password only if username is unchanged.\nChanging/disabling proxy clears the previous password.", foreground=MUTED).pack(anchor="w", pady=(8, 0))
         footer = ttk.Frame(outer)
         footer.pack(fill="x", pady=(20, 0))
         ttk.Button(footer, text="Cancel", command=self.destroy).pack(side="right", padx=(8, 0))
@@ -358,13 +358,11 @@ class App:
         p = self.store.get(pid)
         if messagebox.askyesno("Delete profile", f"Permanently remove {p.name} and its local browsing data?\nThis cannot be undone."):
             try:
-                leftovers = self.store.delete(pid)
-                # Never delete credentials before the DB and profile data have
-                # been logically deleted. A failure leaves the secret intact.
-                try:
-                    delete_password(pid)
-                except Exception as exc:
-                    messagebox.showwarning("Credential cleanup", "Profile deleted, but the saved proxy credential could not be removed: " + str(exc), parent=self.root)
+                from .services import delete_profile_with_credentials
+                leftovers, credential_warning = delete_profile_with_credentials(
+                    self.store, pid, delete_secret=delete_password, clear_run=self.manager.clear_run)
+                if credential_warning:
+                    messagebox.showwarning("Credential cleanup", credential_warning, parent=self.root)
                 self.refresh()
                 self.notice("Deleted " + p.name)
                 if leftovers:

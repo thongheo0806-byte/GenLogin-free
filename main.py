@@ -52,7 +52,26 @@ def main() -> int:
         root.tk.call("tk", "scaling", 1.2)
     except tk.TclError:
         pass
-    App(root)
+    try:
+        App(root)
+    except Exception as exc:
+        # A damaged/newer SQLite catalog must not silently crash pythonw.exe.
+        # The doctor path deliberately uses Store(initialize=False) and still works.
+        message = (
+            "AutumnGenLogin could not open its local profile catalog.\n\n"
+            f"{type(exc).__name__}: {str(exc)[:240]}\n\n"
+            "Your browser data has NOT been deleted.\n"
+            "Open a terminal in the application folder and run:\n"
+            "  START-WINDOWS.cmd --doctor\n"
+            "Back up the data directory before attempting repairs."
+        )
+        print(message, file=sys.stderr)
+        try:
+            from tkinter import messagebox
+            messagebox.showerror("AutumnGenLogin startup failed", message, parent=root)
+        finally:
+            root.destroy()
+        return 1
     root.mainloop()
     return 0
 
