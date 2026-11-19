@@ -15,7 +15,7 @@ class Profile:
     name: str = "New profile"
     group_name: str = "Default"
     tags: str = ""
-    browser: str = "chrome"  # chrome, msedge, chromium
+    browser: str = "chrome"  # chromium, chrome, msedge, firefox, webkit
     start_url: str = "https://example.com"
     locale: str = "en-US"
     timezone_id: str = "UTC"
@@ -34,7 +34,7 @@ class Profile:
             raise ValueError("Profile name must be between 1 and 100 characters")
         if not isinstance(self.group_name, str) or not isinstance(self.tags, str) or len(self.group_name) > 100 or len(self.tags) > 500:
             raise ValueError("Group or tags are invalid")
-        if self.browser not in {"chrome", "msedge", "chromium"}:
+        if self.browser not in {"chrome", "msedge", "chromium", "firefox", "webkit"}:
             raise ValueError("Unknown browser engine")
         valid_http_url(self.start_url)
         if not isinstance(self.locale, str) or not re.fullmatch(

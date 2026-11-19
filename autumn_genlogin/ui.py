@@ -2,15 +2,20 @@
 from __future__ import annotations
 
 import json
+import threading
+from datetime import datetime, timedelta
 import queue
 import time
 import tkinter as tk
 from dataclasses import replace
 from pathlib import Path
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox, simpledialog, ttk
 
 from .api import LocalAPI
-from .browser import BrowserManager
+from .browser_shared import SharedBrowserManager
+from .graph_ui import GraphEditor
+from .scheduler import ScheduleStore, Scheduler
+from .team_sync import CloudClient, safe_profile_metadata, HubError
 from .diagnostics import audit_store
 from .visual_workflow import WorkflowBuilder
 from .models import Profile, validated_steps
@@ -59,7 +64,7 @@ class ProfileEditor(tk.Toplevel):
         self._field(general, "Group", "group_name")
         self._field(general, "Tags (comma-separated)", "tags")
         self._field(general, "Start URL", "start_url")
-        self._field(general, "Browser (installed Chrome / Edge)", "browser", choices=("chrome", "msedge", "chromium"))
+        self._field(general, "Browser (installed Chrome / Edge)", "browser", choices=("chrome", "msedge", "chromium", "firefox", "webkit"))
         ttk.Label(general, text="Each profile gets its own browser data folder.\nFor bundled Chromium, install it separately with Playwright.", foreground=MUTED).pack(anchor="w", pady=(16, 0))
         self._field(identity, "Locale (e.g. en-US, vi-VN)", "locale")
         self._field(identity, "IANA timezone (e.g. Asia/Ho_Chi_Minh)", "timezone_id")
@@ -115,10 +120,15 @@ class ProfileEditor(tk.Toplevel):
 class App:
     def __init__(self, root: tk.Tk):
         self.root = root
-        self.store = Store()
-        self.manager = BrowserManager(self.store)
+        self.store = Store(reuse_connections=True)
+        self.manager = SharedBrowserManager(self.store)
+        self.schedule_store = ScheduleStore(self.store)
+        self.scheduler = Scheduler(self.schedule_store, self.manager.start_workflow)
+        self.scheduler.start()
+        self.cloud = None
+        self.cloud_revision = {"profiles": 0, "workflows": 0}
         self.extensions = self.manager.extensions
-        self.api = LocalAPI(self.store, self.manager)
+        self.api = LocalAPI(self.store, self.manager, self.schedule_store)
         self.root.title("AutumnGenLogin  |  Local Browser Studio")
         self.root.geometry("1230x780")
         self.root.minsize(990, 650)
@@ -131,6 +141,7 @@ class App:
         self.refresh()
         self.root.after(150, self.poll_events)
         self.root.protocol("WM_DELETE_WINDOW", self.on_quit)
+        self.root.bind("<Destroy>", self._root_destroyed, add="+")
 
     def _style(self):
         style = ttk.Style(self.root)
@@ -170,10 +181,12 @@ class App:
         ttk.Button(top, text="Import metadata", command=self.import_profiles).pack(side="right")
         tabs = ttk.Notebook(page)
         tabs.pack(fill="both", expand=True)
-        profile_tab, flow_tab, extensions_tab, logs_tab = (ttk.Frame(tabs, padding=(0, 16)) for _ in range(4))
+        profile_tab, flow_tab, extensions_tab, schedule_tab, cloud_tab, logs_tab = (ttk.Frame(tabs, padding=(0, 16)) for _ in range(6))
         tabs.add(profile_tab, text="  Profiles  ")
         tabs.add(flow_tab, text="  Automation  ")
         tabs.add(extensions_tab, text="  Extensions  ")
+        tabs.add(schedule_tab, text="  Scheduler  ")
+        tabs.add(cloud_tab, text="  Team sync  ")
         tabs.add(logs_tab, text="  Activity log  ")
         controls = ttk.Frame(profile_tab)
         controls.pack(fill="x", pady=(0, 13))
@@ -208,21 +221,27 @@ class App:
         flow_header = ttk.Frame(flow_tab)
         flow_header.pack(fill="x", pady=(0, 10))
         ttk.Label(flow_header, text="Workflow automation", style="Heading.TLabel").pack(side="left")
-        for title, action in (("Load JSON", self.load_workflow), ("Save JSON", self.save_workflow),
-                              ("Run on selected profile", self.run_workflow), ("Cancel", self.cancel_workflow)):
+        for title, action in (("Load", self.load_workflow), ("Save", self.save_workflow),
+                              ("Record", self.start_recorder), ("Stop recording", self.stop_recorder),
+                              ("Use recording", self.import_recording),
+                              ("Run", self.run_workflow), ("Cancel", self.cancel_workflow)):
             ttk.Button(flow_header, text=title, command=action).pack(side="right", padx=(8, 0))
         self.flow_tabs = ttk.Notebook(flow_tab)
         self.flow_tabs.pack(fill="both", expand=True)
         visual_panel = ttk.Frame(self.flow_tabs, padding=12)
         json_panel = ttk.Frame(self.flow_tabs, padding=12)
+        graph_panel = ttk.Frame(self.flow_tabs, padding=12)
         self.flow_tabs.add(visual_panel, text="  Visual step builder  ")
         self.flow_tabs.add(json_panel, text="  JSON source  ")
+        self.flow_tabs.add(graph_panel, text="  Node graph  ")
         self.builder = WorkflowBuilder(visual_panel, EXAMPLE_STEPS)
         self.builder.pack(fill="both", expand=True)
         self.workflow = tk.Text(json_panel, font=("Cascadia Code", 11), bg=PANEL, fg=FG,
                                 insertbackground=FG, relief="flat", undo=True, padx=17, pady=16, wrap="none")
         self.workflow.pack(fill="both", expand=True)
         self.workflow.insert("1.0", json.dumps(EXAMPLE_STEPS, indent=2, ensure_ascii=False))
+        self.graph_builder = GraphEditor(graph_panel)
+        self.graph_builder.pack(fill="both", expand=True)
         self.flow_tabs.bind("<<NotebookTabChanged>>", self._sync_workflow_tabs)
         # Extensions are never downloaded automatically and never executed on install.
         extension_header = ttk.Frame(extensions_tab)
@@ -242,6 +261,8 @@ class App:
         self.extension_tree.bind("<Double-1>", lambda *_: self.extension_details())
         ttk.Button(extensions_tab, text="View permissions", command=self.extension_details).pack(anchor="e", pady=(10, 0))
         self.refresh_extensions()
+        self._build_schedule_tab(schedule_tab)
+        self._build_cloud_tab(cloud_tab)
         ttk.Label(logs_tab, text="Session activity", style="Heading.TLabel").pack(anchor="w", pady=(0, 14))
         self.log_widget = tk.Text(logs_tab, font=("Cascadia Code", 10), bg=PANEL, fg=FG, insertbackground=FG, relief="flat", state="disabled", padx=15, pady=15)
         self.log_widget.pack(fill="both", expand=True)
@@ -405,7 +426,7 @@ class App:
             # Tk dispatches the programmatic select event asynchronously.
             self._ignore_next_workflow_tab_event = False
             return
-        if getattr(self, "_syncing_workflow", False):
+        if getattr(self, "_syncing_workflow", False) or self.flow_tabs.index("current") == 2:
             return
         self._syncing_workflow = True
         try:
@@ -426,13 +447,17 @@ class App:
     def current_steps(self):
         if self.flow_tabs.index("current") == 0:
             return self.builder.get_steps()
+        if self.flow_tabs.index("current") == 2:
+            return self.graph_builder.get_graph()
         return validated_steps(json.loads(self.workflow.get("1.0", "end")))
 
     def run_workflow(self):
         pid = self.selected_id()
         if pid:
             try:
-                self.manager.run_steps(pid, self.current_steps())
+                workflow = self.current_steps()
+                if isinstance(workflow, dict): self.manager.run_graph(pid, workflow)
+                else: self.manager.run_steps(pid, workflow)
                 self.notice("Workflow queued for selected profile")
             except Exception as exc:
                 messagebox.showerror("Automation error", str(exc))
@@ -448,10 +473,16 @@ class App:
         if path:
             try:
                 source = Path(path).read_text(encoding="utf-8")
-                validated_steps(json.loads(source))
+                data = json.loads(source)
+                if isinstance(data, dict):
+                    self.graph_builder.set_graph(data)
+                    self.flow_tabs.select(2)
+                    self.notice("Loaded graph workflow")
+                    return
+                validated_steps(data)
                 self.workflow.delete("1.0", "end")
                 self.workflow.insert("1.0", source)
-                self.builder.set_steps(validated_steps(json.loads(source)))
+                self.builder.set_steps(validated_steps(data))
             except Exception as exc:
                 messagebox.showerror("Workflow error", str(exc))
 
@@ -464,6 +495,185 @@ class App:
                 self.notice(f"Saved workflow: {path}")
         except Exception as exc:
             messagebox.showerror("Workflow error", str(exc))
+
+    def start_recorder(self):
+        pid = self.selected_id()
+        if pid:
+            try:
+                self.manager.start_recording(pid)
+                self.notice("Recording clicks and form selectors. Input contents are NEVER captured.")
+            except Exception as exc:
+                messagebox.showerror("Recorder", str(exc), parent=self.root)
+
+    def stop_recorder(self):
+        pid = self.selected_id()
+        if pid:
+            self.manager.stop_recording(pid)
+            self.notice("Recorder stopped; import the captured actions before closing the profile")
+
+    def import_recording(self):
+        pid = self.selected_id()
+        if not pid: return
+        steps = self.manager.recorded_steps(pid)
+        if not steps:
+            messagebox.showinfo("Recorder", "No actions recorded. Open a profile and click Record first.", parent=self.root)
+            return
+        try:
+            self.builder.set_steps(steps)
+            self.flow_tabs.select(0)
+            self.notice(f"Imported {len(steps)} recorded steps; all input values are blank for safety")
+        except (TypeError, ValueError) as exc:
+            messagebox.showerror("Recorder", str(exc), parent=self.root)
+
+    def _build_schedule_tab(self, frame):
+        ttk.Label(frame, text="Durable local schedules (UTC storage; local clock entry)", style="Heading.TLabel").pack(anchor="w", pady=8)
+        box = ttk.Frame(frame)
+        box.pack(fill="x", pady=10)
+        ttk.Label(box, text="Start in minutes").pack(side="left")
+        self.schedule_delay = tk.StringVar(value="1")
+        ttk.Entry(box, textvariable=self.schedule_delay, width=7).pack(side="left", padx=8)
+        ttk.Label(box, text="Repeat every minutes (0 = once)").pack(side="left")
+        self.schedule_interval = tk.StringVar(value="0")
+        ttk.Entry(box, textvariable=self.schedule_interval, width=7).pack(side="left", padx=8)
+        ttk.Button(box, text="Schedule selected workflow", command=self.schedule_workflow).pack(side="left", padx=8)
+        ttk.Button(box, text="Delete selected", command=self.remove_schedule).pack(side="left", padx=8)
+        ttk.Button(box, text="Refresh", command=self.refresh_schedules).pack(side="left")
+        self.schedule_tree = ttk.Treeview(frame, columns=("profile","due","interval","status"), show="headings")
+        for column in ("profile","due","interval","status"):
+            self.schedule_tree.heading(column, text=column.title())
+            self.schedule_tree.column(column, width=250 if column == "profile" else 170)
+        self.schedule_tree.pack(fill="both", expand=True)
+        ttk.Label(frame, text="Tasks run only while AutumnGenLogin is open. Misfires are skipped, not replayed in bulk.",style="Muted.TLabel").pack(anchor="w", pady=8)
+        self.refresh_schedules()
+
+    def refresh_schedules(self):
+        self.schedule_tree.delete(*self.schedule_tree.get_children())
+        for job in self.schedule_store.list():
+            self.schedule_tree.insert("", "end", iid=job.id,
+                values=(job.profile_id[:8],job.next_run_utc, job.interval_seconds or "once",job.last_status))
+
+    def schedule_workflow(self):
+        pid = self.selected_id()
+        if not pid: return
+        try:
+            delay = float(self.schedule_delay.get())
+            interval = float(self.schedule_interval.get())
+            if delay < 0 or delay > 365*24*60 or interval < 0:
+                raise ValueError("Invalid schedule time")
+            if interval and (interval < 1 or not interval.is_integer()):
+                raise ValueError("Repeat every 1 minute or longer in whole minutes")
+            job=self.schedule_store.add(pid, self.current_steps(),
+                datetime.now().astimezone()+timedelta(minutes=delay),int(interval*60) if interval else None)
+            self.refresh_schedules()
+            self.notice("Scheduled job " + job[:8])
+        except Exception as exc:
+            messagebox.showerror("Schedule error", str(exc), parent=self.root)
+
+    def remove_schedule(self):
+        selection=self.schedule_tree.selection()
+        if selection:
+            self.schedule_store.remove(selection[0]);self.refresh_schedules()
+
+    def _build_cloud_tab(self,frame):
+        ttk.Label(frame, text="Opt-in encrypted metadata & workflow team sync",style="Heading.TLabel").pack(anchor="w", pady=8)
+        ttk.Label(frame, text="Requires self-hosted server (python main.py --hub). For Internet use, terminate HTTPS at a reverse proxy.\nNo browser sessions, cookies, proxy settings or credentials are uploaded.",style="Muted.TLabel").pack(anchor="w",pady=8)
+        self.cloud_fields={}
+        for title,name,default,secret in (("Server URL","url","http://127.0.0.1:8899",False),
+                    ("User","username","",False),("Password","password","",True),
+                    ("Team ID","team_id","",False),("Shared encryption passphrase","passphrase","",True)):
+            box=ttk.Frame(frame);box.pack(fill="x",pady=4)
+            ttk.Label(box,text=title,width=28).pack(side="left")
+            var=tk.StringVar(value=default)
+            ttk.Entry(box,textvariable=var,show="*" if secret else "",width=60).pack(side="left",fill="x",expand=True)
+            self.cloud_fields[name]=var
+        row=ttk.Frame(frame);row.pack(fill="x",pady=12)
+        for title,action in (("Register",self.cloud_register),("Login",self.cloud_login),
+                             ("Create team",self.cloud_create_team),("Invite member",self.cloud_invite),
+                             ("Push metadata",lambda:self.cloud_sync("profiles","push")),
+                             ("Pull metadata",lambda:self.cloud_sync("profiles","pull")),
+                             ("Push workflow",lambda:self.cloud_sync("workflows","push")),
+                             ("Pull workflow",lambda:self.cloud_sync("workflows","pull"))):
+            ttk.Button(row,text=title,command=action).pack(side="left",padx=3)
+        self.cloud_status=tk.StringVar(value="Not signed in")
+        ttk.Label(frame,textvariable=self.cloud_status).pack(anchor="w")
+        ttk.Label(frame,text="Remote team roles: owner, admin, editor, viewer. Push uses revision checks to reject conflicts.",style="Muted.TLabel").pack(anchor="w",pady=8)
+
+    def _cloud_action(self,fn,finished=None):
+        def worker():
+            try: result=fn()
+            except Exception as exc:
+                self.root.after(0,lambda error=str(exc):messagebox.showerror("Team sync",error,parent=self.root))
+            else:
+                self.root.after(0,lambda:finished(result) if finished else self.cloud_status.set("Success"))
+        threading.Thread(target=worker,daemon=True).start()
+
+    def cloud_register(self):
+        values={k:v.get() for k,v in self.cloud_fields.items()}
+        def task():
+            return CloudClient(values["url"]).register(values["username"],values["password"])
+        self._cloud_action(task,lambda _:self.cloud_status.set("User registered; log in next"))
+
+    def cloud_login(self):
+        values={k:v.get() for k,v in self.cloud_fields.items()}
+        def task():
+            client=CloudClient(values["url"])
+            client.login(values["username"],values["password"])
+            return client
+        def done(client):
+            self.cloud=client
+            self.cloud_revision={"profiles":0,"workflows":0}
+            self.cloud_fields["password"].set("")
+            self.cloud_status.set("Authenticated · token kept in memory")
+        self._cloud_action(task,done)
+
+    def cloud_create_team(self):
+        if not self.cloud:return messagebox.showinfo("Team sync","Log in first")
+        self._cloud_action(lambda:self.cloud.create_team("Autumn team"),
+            lambda ident:(self.cloud_fields["team_id"].set(ident),self.cloud_status.set("Team created: "+ident)))
+
+    def cloud_invite(self):
+        if not self.cloud:return messagebox.showinfo("Team sync","Log in first")
+        username=simpledialog.askstring("Add team member","Existing username",parent=self.root)
+        if not username:return
+        role=simpledialog.askstring("Team role","viewer, editor or admin",parent=self.root)
+        if role not in {"viewer","editor","admin"}:return
+        team_id=self.cloud_fields["team_id"].get()
+        self._cloud_action(lambda:self.cloud.set_member(team_id,username,role),
+                           lambda _:self.cloud_status.set(f"Added {username} as {role}"))
+
+    def cloud_sync(self,name,direction):
+        if not self.cloud:return messagebox.showinfo("Team sync","Log in first",parent=self.root)
+        team_id=self.cloud_fields["team_id"].get().strip()
+        passphrase=self.cloud_fields["passphrase"].get()
+        if len(passphrase)<12:return messagebox.showerror("Sync","Use a passphrase of at least 12 characters",parent=self.root)
+        if direction=="push":
+            try:doc=safe_profile_metadata(self.store) if name=="profiles" else {"format":"AutumnGenLogin/workflow-1","workflow":self.current_steps()}
+            except Exception as exc:return messagebox.showerror("Sync",str(exc),parent=self.root)
+            if not messagebox.askyesno("Encrypted sync",f"Upload encrypted {name} metadata to the selected team?",parent=self.root):return
+            def task():return self.cloud.push(team_id,name,self.cloud_revision[name],doc,passphrase)
+            def done(rev):self.cloud_revision[name]=rev;self.cloud_status.set(f"Uploaded {name} revision {rev}")
+            self._cloud_action(task,done)
+        else:
+            def task():return self.cloud.pull(team_id,name,passphrase)
+            def done(value):
+                revision,doc=value
+                if not doc:return self.cloud_status.set("No remote document")
+                if not messagebox.askyesno("Cloud preview",f"Import encrypted {name} revision {revision} from this team into local data?",parent=self.root):return
+                try:
+                    if name=="profiles":
+                        from .team_sync import merge_safe_profiles
+                        count=merge_safe_profiles(self.store,doc,active=self.manager.active)
+                        self.refresh()
+                        self.cloud_status.set(f"Merged {count} profile metadata rows")
+                    else:
+                        if doc.get("format")!="AutumnGenLogin/workflow-1":raise ValueError("Wrong workflow format")
+                        flow=doc["workflow"]
+                        if isinstance(flow,dict):self.graph_builder.set_graph(flow);self.flow_tabs.select(2)
+                        else:self.builder.set_steps(validated_steps(flow));self.flow_tabs.select(0)
+                        self.cloud_status.set("Downloaded workflow")
+                    self.cloud_revision[name]=revision
+                except Exception as exc:messagebox.showerror("Team sync",str(exc),parent=self.root)
+            self._cloud_action(task,done)
 
     def refresh_extensions(self):
         if not hasattr(self, "extension_tree"):
@@ -621,8 +831,15 @@ class App:
         finally:
             self.root.after(150, self.poll_events)
 
+    def _root_destroyed(self, event):
+        if event.widget is self.root:
+            self.scheduler.stop()
+            self.manager.stop_all()
+            self.store.close_thread_connection()
+
     def on_quit(self):
         self._shutdown_deadline = time.monotonic() + 8.0
+        self.scheduler.stop()
         self.manager.stop_all()
         # shutdown API on a thread so the UI cannot freeze during shutdown
         if self.api.server:
@@ -637,6 +854,8 @@ class App:
         elif self.manager.count():
             # Never block shutdown permanently, but do not pretend resources
             # were cleaned: daemon workers exit with the application process.
+            self.store.close_thread_connection()
             self.root.destroy()
         else:
+            self.store.close_thread_connection()
             self.root.destroy()

@@ -4,7 +4,19 @@
 
 **Free, local-first browser profile studio for Windows**. This is an independent open-source implementation inspired by the *category* of browser profile managers. **Not affiliated with GenLogin; not a clone of its proprietary browser engine.**
 
-**Project status: v0.4.3-dev (2026-11-19 audit fixes), incomplete feature parity.** This development branch adds a sequential visual workflow builder, opt-in local Manifest V3 extensions for Playwright Chromium, and Windows browser/GUI integration tests. The release build is disabled; a passing test is not an approval to ship.
+**Project status: v0.5.0-dev (2026-11-19), incomplete feature parity.** This development branch adds a sequential visual workflow builder, opt-in local Manifest V3 extensions for Playwright Chromium, and Windows browser/GUI integration tests. The release build is disabled; a passing test is not an approval to ship.
+
+
+## v0.5-dev functional expansion (source only)
+
+- **Node graph designer:** drag nodes on a canvas, link labelled branches, edit actions and validate before running; conditions check for element existence and repeat nodes have bounded loops. Open Automation → **Node graph**.
+- **Recorder:** open a profile, choose **Record**, interact with the page, stop and choose **Use recording**. It records click/selector/form *structure*; it never stores what you typed into fields (including passwords). Review and fill placeholders before replay.
+- **Durable scheduler:** Scheduler tab schedules the current visual/graph/JSON workflow for a selected profile, once or at a whole-minute recurring interval. Scheduled runs operate while the desktop app remains open; missed intervals are skipped.
+- **Team sync (self-hosted):** `python main.py --hub` runs an opt-in loopback service on port 8899; the Team Sync tab supports register, login, team creation, invites, and encrypted manual push/pull of profile metadata or a workflow. See [Team Sync security and setup](docs/TEAM_SYNC_OPERATIONS.md). **This does not sync browser sessions, cookies or proxy passwords.**
+- **Five browser engines:** Playwright Chromium, Chrome, Edge, Firefox and WebKit are selectable. For Firefox/WebKit run `python -m playwright install firefox webkit`. Only bundled Chromium supports unpacked extensions. See [0.5 feature/evidence matrix](docs/FEATURES_050.md).
+- **Performance architecture:** a single asynchronous Playwright driver runs independent contexts, rather than one Node driver per profile. SQLite connection reuse is enabled in the desktop app and is scoped to individual threads.
+
+**Important:** These additions are not evidence of full GenLogin/Titan feature equivalence. There is **no new EXE build**. See [Titan evidence protocol](docs/TITAN_VERIFICATION_PROTOCOL.md) and [release gates](docs/RELEASE_GATES.md).
 
 ## Current features
 
@@ -13,11 +25,11 @@
 - Create, edit, clone, group, tag, search, import and export browser profile **metadata**.
 - Launch independent Chrome/Edge/Playwright Chromium sessions with distinct persistent `user_data_dir` folders (cookies, history and sessions isolated by directory).
 - Set locale, IANA timezone, viewport, optional user agent, start URL, and per-profile HTTP proxy (optional authentication) or SOCKS5 proxy (**no username/password authentication** in Chromium). Proxy passwords are stored via the OS credential vault (`keyring`), not in SQLite or export JSON.
-- Run up to six browser sessions at once, with independent worker threads. Bulk-open one selected group from the desktop UI.
+- Run up to six browser sessions at once, with a shared asynchronous Playwright driver. Bulk-open one selected group from the desktop UI.
 - Build and run a JSON workflow without executing untrusted code: `goto`, `click`, `fill`, `press`, `check`, `uncheck`, `select_option`, `scroll_into_view`, `wait`, `wait_for`, `extract_text`, `screenshot`. Cancel between steps.
 - Save screenshots in a per-profile local directory.
 - Opt-in, loopback-only HTTP API with a fresh bearer token per startup. **Off by default**.
-- SQLite metadata stored locally, no subscription, no login, no cloud sync or tracking service.
+- SQLite metadata stored locally, no subscription or mandatory cloud login. Optional self-hosted encrypted metadata/workflow sync is disabled by default.
 - The Windows GitHub Actions workflow performs unit/GUI tests and headless real-Chromium integration checks; **EXE building and publishing are disabled** pending documented feature parity.
 
 ## Quick start: Windows (source)
@@ -99,15 +111,15 @@ Unit tests include regressions for manually closing a browser window (Playwright
 
 ## Comparison to GenLogin
 
-| Feature | This repo v0.4.2-dev | Status |
+| Feature | This repo v0.5-dev | Status |
 |---|---|---|
 | Persistent browser profile separation | Independent per-profile Chromium data dir | Implemented, platform QA pending |
 | Profile manager, tags, groups, search, clone | Local SQLite + UI | Implemented |
 | Proxy HTTP and SOCKS5 (no-auth) | Playwright configuration, verified validation; HTTP credentials in OS vault | Real proxy QA pending |
 | Locale, timezone, viewport, user agent | Standard Playwright context options | Implemented |
-| Visual drag/drop workflow builder | Sequential builder plus JSON roundtrip | Implemented basic; graph/recorder missing |
+| Visual drag/drop workflow builder | Sequential builder, graph nodes (conditions/repeats), browser recorder (selectors only) | Partial; not full GenLogin node catalog |
 | Deep stealth fingerprint engine / custom browser core | Standard Chrome/Edge/Chromium, no engine patch | **Not implemented** |
-| Cloud sync / team role sharing | Local only | Not implemented |
+| Cloud sync / team role sharing | Optional self-hosted encrypted metadata & workflow sync with role checks | Partial; no browser session/cloud GenLogin API parity |
 | Marketplace / GenLogin-exclusive integrations | None | Not implemented |
 | Browser extension management UI | Opt-in local MV3 folder/ZIP import and attach | Basic implemented; marketplace/update missing |
 | Windows installer, signed EXE, automatic updates | CI tests only, release gate enforced | Not implemented/release on hold |

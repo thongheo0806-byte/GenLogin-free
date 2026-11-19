@@ -40,7 +40,30 @@ def doctor() -> int:
     return 1 if report["summary"]["failed"] else 0
 
 
+def run_hub() -> int:
+    """Self-hosted metadata sync server, loopback-only unless TLS proxy is used."""
+    from pathlib import Path
+    from autumn_genlogin.storage import data_home
+    from autumn_genlogin.team_sync import TeamHub, HubHTTPServer
+    import os
+    port = int(os.environ.get("AUTUMN_HUB_PORT", "8899"))
+    if not 1 <= port <= 65535:
+        raise ValueError("Invalid sync hub port")
+    hub = TeamHub(data_home() / "team-hub.sqlite3")
+    server = HubHTTPServer(("127.0.0.1", port), hub)
+    print(f"Autumn sync hub listening at http://127.0.0.1:{port}; TLS required for remote access",flush=True)
+    try:
+        server.serve_forever(poll_interval=0.2)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.server_close()
+    return 0
+
+
 def main() -> int:
+    if "--hub" in sys.argv:
+        return run_hub()
     if "--doctor" in sys.argv or "--doctor-json" in sys.argv:
         return doctor()
     if "--self-check" in sys.argv:
