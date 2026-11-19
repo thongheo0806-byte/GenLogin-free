@@ -48,3 +48,7 @@ Assessment baseline: 2026-11-18; engineering audit follow-up: 2026-11-19. Source
 ## Release decision
 
 Only after all necessary gates are demonstrated can CI be changed to produce a Windows EXE. The GitHub Actions workflow currently **does not** build binaries. Existing older EXEs are historical development builds, not a validated parity release.
+
+### 2026-11-19 follow-up
+
+[ ] Validate Windows existing `.venv` upgrade (`tzdata`), corruption dialog, staging cleanup after a restart, API storage error and sensitive-memory expiry through the current CI run. These regressions have been added to source and CI; mark verified only after their executed Windows run succeeds. This does not reopen the EXE build gate.

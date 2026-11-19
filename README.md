@@ -4,7 +4,7 @@
 
 **Free, local-first browser profile studio for Windows**. This is an independent open-source implementation inspired by the *category* of browser profile managers. **Not affiliated with GenLogin; not a clone of its proprietary browser engine.**
 
-**Project status: v0.4.2-dev (2026-11-19 audit fixes), incomplete feature parity.** This development branch adds a sequential visual workflow builder, opt-in local Manifest V3 extensions for Playwright Chromium, and Windows browser/GUI integration tests. The release build is disabled; a passing test is not an approval to ship.
+**Project status: v0.4.3-dev (2026-11-19 audit fixes), incomplete feature parity.** This development branch adds a sequential visual workflow builder, opt-in local Manifest V3 extensions for Playwright Chromium, and Windows browser/GUI integration tests. The release build is disabled; a passing test is not an approval to ship.
 
 ## Current features
 
@@ -134,3 +134,12 @@ The repo's Windows workflow is now **test-only**, with an explicit real Chromium
 ## 2026-11-19 engineering audit
 
 See [audit remediation report](docs/AUDIT_2026-11-19.md) for exact regression tests, unresolved risks and verification status. Fixes were based on the source at commit `3d6367f81162`; the original reproduction script path belonged to another environment and was not available for execution here.
+
+## 2026-11-19 follow-up audit (v0.4.3-dev)
+
+- `START-WINDOWS.cmd` updates dependencies on every start, including an already-existing `.venv` (particularly Windows `tzdata`). Use `START-WINDOWS.cmd --self-check` to verify upgrades.
+- On a healthy catalog startup, safely retry deletion-staging cleanup for profiles already removed from the DB. Staging for an existing profile is retained for recovery; unknown files and locked profiles are NOT erased. Deletion cannot be guaranteed immediately if Windows maintains a file lock. See Diagnostics.
+- GUI startup with corrupt/newer SQLite now displays an error and advises `START-WINDOWS.cmd --doctor` instead of silently failing. Back up the data directory before attempting any repair.
+- `extract_text` results are held in memory for at most 15 minutes, wiped when browser sessions stop, and removed with the profile. Automated extraction must be intentionally requested by a workflow step.
+- Unsupported proxy hostnames, reused credentials from changed usernames and profile engine switches with attached extensions are rejected or cleaned up proactively. API responds with HTTP 503 when local storage is unavailable.
+- Windows CI has an explicit existing-venv upgrade lane; browser compatibility tests remain a separate, actual-Chromium lane. **No EXE is built.** Passing tests does not establish GenLogin/Titan parity.

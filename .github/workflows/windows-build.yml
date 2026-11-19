@@ -25,6 +25,26 @@ jobs:
         env:
           AUTUMN_GUI_SMOKE: '1'
         run: python -m unittest discover -s tests -p "test_gui_smoke.py" -v
+  upgrade-existing-venv:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Simulate previously installed environment without tzdata
+        shell: pwsh
+        run: |
+          python -m venv .venv
+          .\.venv\Scripts\python.exe -m pip install playwright keyring
+          .\.venv\Scripts\python.exe -m pip uninstall -y tzdata
+          .\.venv\Scripts\python.exe -c "import importlib.util; assert importlib.util.find_spec('tzdata') is None"
+      - name: Upgrade via existing Windows start script (NO EXE)
+        shell: pwsh
+        run: |
+          cmd /c START-WINDOWS.cmd --self-check
+          if ($LASTEXITCODE -ne 0) { throw "Startup upgrade regression" }
+          .\.venv\Scripts\python.exe -c "import tzdata; from autumn_genlogin.models import Profile; Profile(timezone_id='UTC').validate()"
   browser-integration:
     runs-on: windows-latest
     steps:
@@ -37,6 +57,8 @@ jobs:
         run: python -m pip install -r requirements.txt
       - name: Install official Playwright Chromium
         run: python -m playwright install chromium
+      - name: Install test-only process inspection library
+        run: python -m pip install 'psutil>=6,<8'
       - name: Run actual browser integration tests
         env:
           AUTUMN_E2E: '1'

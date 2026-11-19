@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hmac
+import sqlite3
 import json
 import secrets
 import threading
@@ -47,6 +48,12 @@ class LocalAPI:
             def do_GET(self):
                 if not self._authorized():
                     return
+                try:
+                    self._do_get_authorized()
+                except (sqlite3.Error, OSError):
+                    self._json(503, {"error": "Local storage unavailable; run Diagnostics"})
+
+            def _do_get_authorized(self):
                 path = urlparse(self.path).path
                 if path == "/v1/health":
                     self._json(200, {"status": "ok", "running": controller.manager.count()})
@@ -108,6 +115,8 @@ class LocalAPI:
                     self._json(400, {"error": str(exc)[:200]})
                 except KeyError:
                     self._json(404, {"error": "Profile not found"})
+                except (sqlite3.Error, OSError):
+                    self._json(503, {"error": "Local storage unavailable; run Diagnostics"})
 
         self.server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
         self.thread = threading.Thread(target=self.server.serve_forever, name="local-api", daemon=True)
