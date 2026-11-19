@@ -52,7 +52,7 @@ class StoreRegressions(unittest.TestCase):
         self.assertGreater(json.loads(p.stdout)["summary"]["failed"], 0)
 
     def test_uri_reserved_characters_do_not_alias_other_files(self):
-        store = Store(self.base / "a#b?c%")
+        store = Store(self.base / ("a#b%c" if os.name == "nt" else "a#b?c%"))
         store.db.write_bytes(b"corrupt file")
         report = audit_store(store)
         result = next(c for c in report["checks"] if c["name"] == "database_integrity")
