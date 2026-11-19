@@ -41,3 +41,10 @@
 - `extract_text` output is bounded and available from the authenticated local API in process memory. Those values may contain account secrets or sensitive content; never log them or expose the token.
 - Chromium's documented SOCKS5 proxy implementation does **not** support username/password authentication (see https://chromium.googlesource.com/chromium/src/+/main/net/docs/proxy.md). Authenticated SOCKS5 settings are rejected rather than advertised as supported.
 - SQLite `user_version=1` is now recorded. This is the baseline for future migrations, **not** a complete migration suite.
+
+## 2026-11-19 cloud-client bearer redirect regression
+
+- Team-sync API requests now use a private urllib opener that rejects **all HTTP redirects**. Python's default urllib redirect handler may copy the `Authorization` header to a new origin, potentially leaking a team bearer token if a server or reverse proxy redirects to another URL (even plaintext HTTP).
+- The regression uses two synthetic local HTTP servers, an authenticated client and HTTP status codes 301/302/303/307/308. The redirected receiver must get **no requests**, not merely a masked credential.
+- Configure reverse proxies to serve the hub API without redirects. A legitimate URL migration requires changing the cloud server URL explicitly and logging in again. HTTPS remains mandatory for non-loopback connections.
+- This patch prevents this specific credential-forwarding path; it is **not** a complete cloud security audit or a production deployment approval.
