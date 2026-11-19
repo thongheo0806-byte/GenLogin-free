@@ -7,12 +7,12 @@
 | Subsystem | Implementation | Verification limits |
 |---|---|---|
 | Node graph | `graph.py` strict schema (`start`, `action`, `condition`, `repeat`, `end`), labelled transitions, bounded loops (20/loop and 500 operations/run), `GraphEditor` draggable native Tk canvas and importer/exporter | Unit tests; Windows interactive usability and edge cases still need acceptance |
-| Recording | Browser-owned click, select, check, uncheck and fill-selector capture, no input contents; disabled unless requested; opt-in import into visual builder | Unit tests and Windows real Chromium integration required. No claim of full GenLogin recorder parity |
+| Recording | Browser-owned click, select, check, uncheck and fill-selector capture; input and selected option values redacted; disabled unless requested; opt-in import into visual builder | Real Windows Chromium recorder/last-page-close test passed CI `44457106840`. Not full GenLogin recorder parity |
 | Local schedules | `scheduler.py`: durable local UTC next-run, one-shot/interval, atomic claiming across processes and skip missed runs | Unit tests; UI/Windows long-duration tests needed. Scheduler only runs while desktop app is open |
 | Team hub | `team_sync.py`: opt-in self-hosted loopback server, token login, owner/admin/editor/viewer roles, optimistic revision conflict checks | Localhost HTTP/SQLite integration tests. No hosted public service or enterprise compliance |
 | Encrypted sync | Client-side AES-GCM encryption with scrypt-derived key and fresh salt/nonce. Only allowlisted profile metadata and workflow data; explicit push/pull and import confirmation | **Does not** sync cookies, browser session folders, proxy settings, passwords, extension binaries. Passphrase exchange/backup up to user |
-| Engine adapters | Playwright persistent contexts for Chromium, Chrome, Edge, Firefox, WebKit; capability checks for extension loading | Real multi-engine installation & Windows tests required. **Not** Titan Browser engine |
-| Shared driver | `SharedBrowserManager`: one async Playwright driver/event loop thread, up to six distinct browser contexts, per-profile OS leases, managed lifecycle, recorded actions, cancellation | Windows real-browser tests required, especially manual close and failure recovery |
+| Engine adapters | Playwright persistent contexts for Chromium, Chrome, Edge, Firefox, WebKit; capability checks for extension loading | Windows Firefox/WebKit smoke passed CI `44457106840`; Chrome/Edge native launch still unverified. **Not** Titan Browser engine |
+| Shared driver | `SharedBrowserManager`: one async Playwright driver/event loop thread, up to six distinct browser contexts, per-profile OS leases, managed lifecycle, recorded actions, cancellation | Windows Chromium integration passed CI `44457106840`, including manual last-page close. Long-running crash/fault injection untested |
 | SQLite pool | Optional `Store(reuse_connections=True)`: per-thread connection cache, explicit close on main GUI and scheduler worker exit, WAL and foreign keys | Unit tests; performance/Windows disk lock benchmarks pending |
 
 ## Remaining GenLogin parity blockers

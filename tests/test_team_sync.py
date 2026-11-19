@@ -86,6 +86,14 @@ class TeamHTTPTests(unittest.TestCase):
         alice.set_member(team,"bob","editor")
         self.assertEqual(bob.push(team,"profiles",1,doc,"shared passphrase_123"),2)
         with self.assertRaises(HubError):bob.set_member(team,"alice","admin")
+        alice.set_member(team,"bob","admin")
+        with self.assertRaises(HubError) as owner_demotion:
+            bob.set_member(team,"alice","viewer")
+        self.assertEqual(owner_demotion.exception.status,403)
+        with self.assertRaises(HubError) as owner_self_demotion:
+            alice.set_member(team,"alice","viewer")
+        self.assertEqual(owner_self_demotion.exception.status,403)
+        self.assertEqual(alice.members(team),[{"username":"alice","role":"owner"},{"username":"bob","role":"admin"}])
         # Server disk cannot contain plaintext profile data.
         # sqlite3.Connection.__exit__ commits but DOES NOT close the handle.
         # On Windows a still-live handle prevents deletion of the test DB.

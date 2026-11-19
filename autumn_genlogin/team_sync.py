@@ -162,11 +162,20 @@ class TeamHub:
         if actor_role!="owner" and role=="admin":
             raise HubError(403,"Only team owner may appoint administrators")
         with closing(self._db()) as c:
+            c.execute("BEGIN IMMEDIATE")
             row=c.execute("SELECT id FROM users WHERE username=?",(username,)).fetchone()
             if row is None: raise HubError(404,"User does not exist")
-            with c:
-                c.execute("INSERT INTO members VALUES(?,?,?) ON CONFLICT(team_id,user_id) DO UPDATE SET role=excluded.role",
-                          (team_id,row["id"],role))
+            existing=c.execute("SELECT role FROM members WHERE team_id=? AND user_id=?",(team_id,row["id"])).fetchone()
+            # Owners are not demotable through membership administration; this
+            # also blocks any malicious admin from locking out the creator.
+            if existing and existing["role"] == "owner":
+                raise HubError(403,"The team owner cannot be reassigned")
+            # Administrators cannot change a peer administrator; owner only.
+            if existing and existing["role"] == "admin" and actor_role != "owner":
+                raise HubError(403,"Only the owner may manage administrators")
+            c.execute("INSERT INTO members VALUES(?,?,?) ON CONFLICT(team_id,user_id) DO UPDATE SET role=excluded.role",
+                      (team_id,row["id"],role))
+            c.commit()
 
     def members(self,actor:str,team_id:str)->list[dict]:
         self.require(actor,team_id)

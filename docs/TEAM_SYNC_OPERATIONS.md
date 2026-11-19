@@ -17,7 +17,7 @@ AutumnGenLogin has no mandatory account or telemetry. Synchronization is **off b
 - Passwords are salted and hashed using `hashlib.scrypt`. Bearer tokens are random, stored as hashes at the server, expire after 24 hours and remain in client process memory. TLS is mandatory beyond loopback.
 - AES-256-GCM with scrypt-derived encryption key, fresh salt/nonce and authenticated format tag. Without the shared passphrase the server cannot recover plaintext. **There is no password recovery.**
 - `safe_profile_metadata()` allows only: UUID, name, group, tags, browser type, start URL, locale, timezone and viewport. It excludes cookies, localStorage, browser folder, proxy host/port/username/password, extensions, API tokens, screenshots and automation results.
-- Team roles: owner administers members, admin may manage editor/viewer roles, editor may update documents, viewer may only read. All permissions are checked server-side. Revision numbers protect against lost-update writes, not malicious remote administrators or compromised clients.
+- Team roles: owner administers members, admin may manage editor/viewer roles but cannot demote the team owner or peer administrators; even the owner cannot be demoted through the membership endpoint, editor may update documents, viewer may only read. All permissions are checked server-side. Revision numbers protect against lost-update writes, not malicious remote administrators or compromised clients.
 - No claim of end-to-end security against malicious installed browser extensions, an infected OS, weak shared passphrases or metadata inferred from team membership.
 
 ## Explicit limitations
