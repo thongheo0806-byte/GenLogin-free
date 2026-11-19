@@ -31,7 +31,7 @@ def audit_store(store: Store) -> dict:
         checks.append(Check(name, status, detail))
 
     try:
-        with closing(sqlite3.connect(f"file:{store.db.as_posix()}?mode=ro", uri=True)) as conn:
+        with closing(sqlite3.connect(store.db.as_uri() + "?mode=ro", uri=True)) as conn:
             result = conn.execute("PRAGMA quick_check").fetchone()[0]
         add("database_integrity", "pass" if result == "ok" else "fail", "SQLite quick_check: " + str(result)[:120])
     except (OSError, sqlite3.Error) as exc:
@@ -53,7 +53,7 @@ def audit_store(store: Store) -> dict:
         add("disk_space", "warn", "Free disk space unavailable")
 
     try:
-        profiles = store.all()
+        profiles = store.all(readonly=True)
     except (OSError, sqlite3.Error, ValueError, TypeError) as exc:
         add("profile_catalog", "fail", type(exc).__name__ + ": cannot read profile catalog")
         profiles = []
@@ -83,6 +83,16 @@ def audit_store(store: Store) -> dict:
     else:
         add("orphaned_profile_data", "warn" if orphans else "pass",
             f"{orphans} unreferenced browser data directories; no files removed")
+
+    # Incomplete cleanup from a successful logical deletion may leave quarantined
+    # directories. Report them instead of silently erasing user data.
+    staging = store.base / "delete-staging"
+    try:
+        leftovers = sum(1 for path in staging.iterdir() if path.is_dir()) if staging.exists() else 0
+        add("pending_deletion_cleanup", "warn" if leftovers else "pass",
+            f"{leftovers} staged data directories pending cleanup")
+    except OSError:
+        add("pending_deletion_cleanup", "warn", "Deletion staging directory inaccessible")
 
     add("privacy_scope", "pass", "Offline checks only; no credentials, browser cookies or browsing history read")
     return {

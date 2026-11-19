@@ -30,7 +30,7 @@ def self_check() -> int:
 def doctor() -> int:
     from autumn_genlogin.storage import Store
     from autumn_genlogin.diagnostics import audit_store
-    report = audit_store(Store())
+    report = audit_store(Store(initialize=False))
     if "--doctor-json" in sys.argv:
         print(json.dumps(report, ensure_ascii=False, indent=2))
     else:

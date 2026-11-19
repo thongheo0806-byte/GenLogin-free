@@ -2,7 +2,7 @@
 
 Decision: **HOLD EXE BUILD**. User requested no Windows release build until functional equivalence with GenLogin has been *verified*, not merely asserted.
 
-Assessment baseline: 2026-11-18. See `FEATURE_MATRIX.md` and `GENLOGIN_TITAN_ASSESSMENT.md`. This checklist is deliberately not marked complete by passing unit tests or by matching promotional features.
+Assessment baseline: 2026-11-18; engineering audit follow-up: 2026-11-19. Source fixes are not evidence of GenLogin parity. See `FEATURE_MATRIX.md` and `GENLOGIN_TITAN_ASSESSMENT.md`. This checklist is deliberately not marked complete by passing unit tests or by matching promotional features.
 
 ## Gate A: complete, independently sourced feature inventory
 
@@ -43,7 +43,7 @@ Assessment baseline: 2026-11-18. See `FEATURE_MATRIX.md` and `GENLOGIN_TITAN_ASS
 - [x] Windows headless Playwright Chromium loaded a benign local MV3 extension and observed the service worker (CI `44235696630`). This does not validate arbitrary extensions.
 - [x] Windows Tkinter structural smoke for profile, extension and workflow tab instantiation (CI `44235696630`).
 - [ ] Full GUI interaction smoke, screenshots, keyboard/a11y and usability acceptance.
-- [ ] Concurrency, storage corruption, disk-full, emergency shutdown, proxy failure and application reinstall.
+- [ ] Concurrency, storage corruption, disk-full, emergency shutdown, proxy failure and application reinstall. **Some** mocked close/corruption/rollback regressions added 2026-11-19; production Windows fault injection pending.
 
 ## Release decision
 

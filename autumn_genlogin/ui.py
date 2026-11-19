@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+import queue
+import time
 import tkinter as tk
 from dataclasses import replace
 from pathlib import Path
@@ -13,6 +15,7 @@ from .diagnostics import audit_store
 from .visual_workflow import WorkflowBuilder
 from .models import Profile, validated_steps
 from .secrets import delete_password, set_password
+from .services import save_profile_with_credentials
 from .storage import Store
 
 BG = "#0e1423"
@@ -100,11 +103,8 @@ class ProfileEditor(tk.Toplevel):
             p = replace(self.profile, **data)
             p.validate()
             secret = self.secret_var.get()
-            if p.proxy_scheme and secret:
-                set_password(pid, secret)  # Fail closed if no credential vault exists.
-            elif not p.proxy_scheme and self.original and self.original.proxy_scheme:
-                delete_password(pid)
-            self.parent.store.save(p)
+            save_profile_with_credentials(self.parent.store, p, self.original, secret,
+                                          set_secret=set_password, delete_secret=delete_password)
             self.parent.refresh()
             self.parent.notice("Saved: " + p.name)
             self.destroy()
@@ -184,11 +184,13 @@ class App:
         ttk.Label(controls, text="Group", style="Muted.TLabel").pack(side="left", padx=(15, 8))
         self.group_combo = ttk.Combobox(controls, width=16, textvariable=self.group, state="readonly")
         self.group_combo.pack(side="left")
-        self.group_combo.bind("<<ComboboxSelected>>", lambda *_: self.refresh())
+        self.group_combo.bind("<<ComboboxSelected>>", lambda *_: self.render_cached_profiles())
         ttk.Label(controls, text="Search", style="Muted.TLabel").pack(side="left", padx=(20, 8))
         search_input = ttk.Entry(controls, textvariable=self.search)
         search_input.pack(side="left", fill="x", expand=True)
-        self.search.trace_add("write", lambda *_: self.refresh())
+        self._search_after = None
+        self._cached_profiles = []
+        self.search.trace_add("write", lambda *_: self.schedule_search())
         tree_frame = ttk.Frame(profile_tab)
         tree_frame.pack(fill="both", expand=True)
         cols = ("name", "group", "tags", "browser", "proxy", "status")
@@ -266,16 +268,26 @@ class App:
         self.log_widget.see("end")
         self.log_widget.configure(state="disabled")
 
+    def schedule_search(self):
+        if self._search_after is not None:
+            self.root.after_cancel(self._search_after)
+        self._search_after = self.root.after(200, self.render_cached_profiles)
+
     def refresh(self):
-        old = self.selected_id(False)
-        profiles = self.store.all()
-        groups = ["All groups"] + sorted({p.group_name for p in profiles})
+        self._cached_profiles = self.store.all()
+        groups = ["All groups"] + sorted({p.group_name for p in self._cached_profiles})
         self.group_combo.configure(values=groups)
         if self.group.get() not in groups:
             self.group.set("All groups")
+        self.render_cached_profiles()
+        self.refresh_extensions()
+
+    def render_cached_profiles(self):
+        self._search_after = None
+        old = self.selected_id(False)
         self.tree.delete(*self.tree.get_children())
         needle = self.search.get().casefold()
-        for p in profiles:
+        for p in self._cached_profiles:
             if self.group.get() != "All groups" and p.group_name != self.group.get():
                 continue
             if needle and needle not in f"{p.name} {p.tags} {p.group_name}".casefold():
@@ -283,7 +295,6 @@ class App:
             self.tree.insert("", "end", iid=p.id, values=(p.name, p.group_name, p.tags, p.browser, (p.proxy_host or "Direct"), "● Running" if self.manager.active(p.id) else "○ Stopped"))
         if old and self.tree.exists(old):
             self.tree.selection_set(old)
-        self.refresh_extensions()
 
     def new_profile(self):
         ProfileEditor(self, None)
@@ -347,10 +358,17 @@ class App:
         p = self.store.get(pid)
         if messagebox.askyesno("Delete profile", f"Permanently remove {p.name} and its local browsing data?\nThis cannot be undone."):
             try:
-                delete_password(pid)
-                self.store.delete(pid)
+                leftovers = self.store.delete(pid)
+                # Never delete credentials before the DB and profile data have
+                # been logically deleted. A failure leaves the secret intact.
+                try:
+                    delete_password(pid)
+                except Exception as exc:
+                    messagebox.showwarning("Credential cleanup", "Profile deleted, but the saved proxy credential could not be removed: " + str(exc), parent=self.root)
                 self.refresh()
                 self.notice("Deleted " + p.name)
+                if leftovers:
+                    messagebox.showwarning("Data cleanup pending", "Some deleted files could not be removed. See Diagnostics for pending cleanup.", parent=self.root)
             except Exception as exc:
                 messagebox.showerror("Delete error", str(exc))
 
@@ -383,17 +401,29 @@ class App:
                 messagebox.showerror("Import error", str(exc))
 
     def _sync_workflow_tabs(self, _event=None):
-        # Both editor views use the same strict schema; never silently drop an invalid JSON edit.
-        if self.flow_tabs.index("current") == 0:
-            try:
-                self.builder.set_steps(validated_steps(json.loads(self.workflow.get("1.0", "end"))))
-            except (ValueError, TypeError, json.JSONDecodeError) as exc:
-                messagebox.showerror("Invalid JSON workflow", str(exc), parent=self.root)
-                self.flow_tabs.select(1)
-        else:
-            steps = self.builder.get_steps() if self.builder._steps else []
-            self.workflow.delete("1.0", "end")
-            self.workflow.insert("1.0", json.dumps(steps, indent=2, ensure_ascii=False))
+        # Switching back after invalid JSON emits a second Tk event: guard it
+        # so the invalid work-in-progress is never overwritten by stale steps.
+        if getattr(self, "_ignore_next_workflow_tab_event", False):
+            # Tk dispatches the programmatic select event asynchronously.
+            self._ignore_next_workflow_tab_event = False
+            return
+        if getattr(self, "_syncing_workflow", False):
+            return
+        self._syncing_workflow = True
+        try:
+            if self.flow_tabs.index("current") == 0:
+                try:
+                    self.builder.set_steps(validated_steps(json.loads(self.workflow.get("1.0", "end"))))
+                except (ValueError, TypeError, json.JSONDecodeError) as exc:
+                    messagebox.showerror("Invalid JSON workflow", str(exc), parent=self.root)
+                    self._ignore_next_workflow_tab_event = True
+                    self.flow_tabs.select(1)
+            else:
+                steps = self.builder.get_steps() if self.builder._steps else []
+                self.workflow.delete("1.0", "end")
+                self.workflow.insert("1.0", json.dumps(steps, indent=2, ensure_ascii=False))
+        finally:
+            self._syncing_workflow = False
 
     def current_steps(self):
         if self.flow_tabs.index("current") == 0:
@@ -569,25 +599,32 @@ class App:
         self.root.clipboard_append(content)
         self.notice("API token copied to clipboard")
 
+    def update_profile_status(self, profile_id: str, status: str):
+        """Update only the affected row; avoid DB re-queries on every event."""
+        if not self.tree.exists(profile_id):
+            return
+        values = list(self.tree.item(profile_id, "values"))
+        values[-1] = ("● Running" if status == "Running" else
+                      "… Starting" if status.startswith("Starting") else "○ Stopped")
+        self.tree.item(profile_id, values=values)
+
     def poll_events(self):
         try:
-            changed = False
             for _ in range(100):
                 try:
                     pid, kind, message = self.manager.events.get_nowait()
-                except __import__("queue").Empty:
+                except queue.Empty:
                     break
                 if kind == "status":
-                    changed = True
+                    self.update_profile_status(pid, message)
                 self.log(f"[{pid[:8]}] [{kind.upper()}] {message}")
                 if kind == "error":
                     self.status.set("Browser error: " + message[:130])
-            if changed:
-                self.refresh()
         finally:
             self.root.after(150, self.poll_events)
 
     def on_quit(self):
+        self._shutdown_deadline = time.monotonic() + 8.0
         self.manager.stop_all()
         # shutdown API on a thread so the UI cannot freeze during shutdown
         if self.api.server:
@@ -596,8 +633,12 @@ class App:
         self.root.after(100, self._exit_when_stopped)
 
     def _exit_when_stopped(self):
-        if self.manager.count():
+        if self.manager.count() and time.monotonic() < self._shutdown_deadline:
             self.status.set("Closing browser sessions...")
             self.root.after(200, self._exit_when_stopped)
+        elif self.manager.count():
+            # Never block shutdown permanently, but do not pretend resources
+            # were cleaned: daemon workers exit with the application process.
+            self.root.destroy()
         else:
             self.root.destroy()
