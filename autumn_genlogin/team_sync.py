@@ -296,6 +296,16 @@ class HubHandler(BaseHTTPRequestHandler):
         self._json(status,result)
 
 
+class _RejectCloudRedirects(urllib.request.HTTPRedirectHandler):
+    """API redirects can forward bearer credentials to an unrelated host.
+
+    Sync endpoints have a fixed API origin and must not redirect, even to
+    another HTTPS URL. Reject all 30x responses before a follow-up request.
+    """
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise HubError(502, "Cloud sync API redirects are not permitted")
+
+
 class CloudClient:
     def __init__(self,base_url:str):
         parsed=urllib.parse.urlsplit(base_url)
@@ -305,13 +315,16 @@ class CloudClient:
             raise ValueError("Remote sync requires HTTPS")
         self.url=base_url.rstrip("/")
         self.token=None
+        # Do not use urlopen's global redirect handler: urllib may copy an
+        # Authorization header across origins (and even to plaintext HTTP).
+        self._opener=urllib.request.build_opener(_RejectCloudRedirects())
 
     def request(self,method:str,path:str,data:dict|None=None):
         raw=None if data is None else json.dumps(data).encode()
         req=urllib.request.Request(self.url+path,raw,method=method,
             headers={"Content-Type":"application/json",**({"Authorization":"Bearer "+self.token} if self.token else {})})
         try:
-            with urllib.request.urlopen(req,timeout=10) as resp:
+            with self._opener.open(req,timeout=10) as resp:
                 return json.loads(resp.read(MAX_DOCUMENT+4096))
         except urllib.error.HTTPError as exc:
             try: msg=json.loads(exc.read(1024)).get("error","Request failed")
