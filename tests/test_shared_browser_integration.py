@@ -24,6 +24,7 @@ class Fixture(BaseHTTPRequestHandler):
     def do_GET(self):
         data=(b'<html><body><h1 id="title">Autumn test</h1>'
               b'<input id="secret" value="" />'
+              b'<select id="category"><option value="">none</option><option value="sensitive-unique-option">sensitive</option></select>'
               b'<button id="press">Push</button>'
               b'<script>document.querySelector("#press").onclick=()=>{document.body.dataset.clicked="yes"}</script>'
               b'</body></html>')

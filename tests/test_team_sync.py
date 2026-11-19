@@ -4,6 +4,7 @@ import sqlite3
 import tempfile
 import threading
 import unittest
+from contextlib import closing
 from pathlib import Path
 
 from autumn_genlogin.team_sync import (TeamHub, HubError, HubHTTPServer, CloudClient,
@@ -86,7 +87,9 @@ class TeamHTTPTests(unittest.TestCase):
         self.assertEqual(bob.push(team,"profiles",1,doc,"shared passphrase_123"),2)
         with self.assertRaises(HubError):bob.set_member(team,"alice","admin")
         # Server disk cannot contain plaintext profile data.
-        with sqlite3.connect(Path(self.tmp.name)/"team.sqlite3") as c:
+        # sqlite3.Connection.__exit__ commits but DOES NOT close the handle.
+        # On Windows a still-live handle prevents deletion of the test DB.
+        with closing(sqlite3.connect(Path(self.tmp.name)/"team.sqlite3")) as c:
             raw=c.execute("SELECT blob FROM documents").fetchone()[0]
             self.assertNotIn("profile-metadata-1",raw)
 
