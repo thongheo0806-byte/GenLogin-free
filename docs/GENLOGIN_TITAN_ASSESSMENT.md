@@ -1,44 +1,33 @@
-# GenLogin and Titan: public-evidence feature assessment
+# GenLogin/Titan feature-parity evidence and release HOLD
 
-Assessed 2026-11-18. **This is public documentation research, not decompilation or an empirical test of Titan.** The `morluto/rea` skill was consulted for its evidence/unknowns separation. There is currently no original GenLogin installer, runtime trace, REA MCP provider, or binary Evidence ID in this project.
+Assessed **2026-11-19**. Public-product comparison only. The official GenLogin release-notes page shows **v4.5.1 (06/08/2026)** as its most recent listed release at assessment time: https://genlogin.com/release-notes . This date reflects the public listing, **not** a verified installed binary. We have not been provided its installer, SHA-256, license authorization or a lawful capture of Titan's implementation.
 
-## Publicly documented scope
+## Source-backed comparison
 
-| Function | Public source | AutumnGenLogin implementation / boundary |
+| Capability | GenLogin published evidence | AutumnGenLogin v0.5 source and checked boundary |
 |---|---|---|
-| Local and cloud profiles | https://docs.genlogin.com/group-profiles/local-and-cloud-profiles | Local SQLite only; cloud has no implementation |
-| Group profiles | https://docs.genlogin.com/group-profiles/group-profiles | Groups, filtering and group launch; no RBAC |
-| Browser identity settings and Titan | https://docs.genlogin.com/group-profiles/create-profile/overview | Stock Playwright Chrome/Edge/Chromium; **no Titan-like custom engine** |
-| Proxy and WebRTC controls | https://docs.genlogin.com/group-profiles/create-profile/network-and-webrtc | Proxy options; no verified WebRTC/DNS leak controls |
-| Extensions | https://docs.genlogin.com/group-profiles/extensions | Not implemented |
-| Visual workflow automation | https://genlogin.com/automation | Validated JSON workflow, no visual graph/recorder |
-| API / third-party automation | https://docs.genlogin.com/genlogin-api/profile-api/1.-profile-list and https://docs.genlogin.com/record-automation/selenium | Own token-authenticated loopback API; no API parity |
-| Team collaboration | https://genlogin.com/management | Not implemented |
+| Browser profiles, groups and local sessions | https://docs.genlogin.com/group-profiles/create-profile/overview | Local SQLite, per-profile user-data folders and OS locks; Chromium persistence/independence tested on Windows |
+| Shared browser runtime | Public product docs describe multi-profile use, not a documented Playwright architecture | One async Playwright driver and loop, several isolated persistent contexts; tested in Windows Chromium |
+| Rendering / fingerprint Titan | https://docs.genlogin.com/group-profiles/create-profile/overview | **Not implemented or verified.** Stock Playwright engines are not Titan |
+| Native Chrome/Edge/Firefox/WebKit | https://playwright.dev/docs/browsers | Adapters and capability detection; Chromium/Firefox/WebKit tested on Windows; branded Chrome/Edge test lane pending |
+| Proxy, WebRTC, locale, timezone | https://docs.genlogin.com/group-profiles/create-profile/network-and-webrtc | Proxy, timezone and locale settings; **no** comprehensive DNS/WebRTC/fingerprint leakage equivalence evidence |
+| Extension management | https://docs.genlogin.com/group-profiles/extensions | Manifest V3 manual import for bundled Chromium only; no marketplace, trust verification or auto updates |
+| Visual automation, recorder and task scheduler | https://genlogin.com/automation | Bounded condition/repeat node graph, drag-and-link UI, action recorder, persistent one-shot/interval schedules; subsets verified by Windows tests; **not** a full GenLogin node catalog |
+| Synchronizer / click by image / video automation | https://genlogin.com/automation | **Not implemented**. Do not confuse ordinary click selectors with image recognition |
+| AI automation and template ecosystem | https://genlogin.com/automation | **Not implemented**; no hosted AI API or vendor templates |
+| Cloud profiles and team controls | https://genlogin.com/automation | Optional **self-hosted encrypted metadata/workflow** sync with owner/admin/editor/viewer and revision checks; no browser-session or GenLogin-cloud protocol support |
+| Third-party API | https://docs.genlogin.com/genlogin-api/profile-api/1.-profile-list | Independently designed loopback API; no GenLogin API compatibility claim |
+| Cloudphone and later product enhancements | https://genlogin.com/release-notes | **Not implemented** |
 
-The official release notes describe continuing changes to Titan and automation: https://genlogin.com/release-notes. No internal algorithms, source patches, exact test coverage, or legal permission to copy an engine are implied by those marketing claims.
+## Real evidence available, and limits
 
-## Open-source research considered
+- Windows CI `44457106840` demonstrated unit/GUI-structure checks, local shared Chromium runtime, graph execution, recorder and manual-close lifecycle, Firefox/WebKit smoke, and existing `.venv` upgrade. Tests are synthetic, use local pages and do not authenticate to real platforms.
+- A separate branded Chrome/Edge Windows job has been added to the development PR and must pass before the adapter is considered Windows-verified.
+- Self-hosted encrypted hub verifies permission enforcement and revision checking via localhost HTTP/SQLite. It has **not** had a hostile-network audit, production TLS deployment, disaster recovery drill, or external security review.
+- There is no GenLogin/Titan binary in the available evidence. **The REA GitHub skill was read but its runtime was not registered and no REA binary inspection was executed.** Consult `docs/TITAN_VERIFICATION_PROTOCOL.md` for the required evidence and authorization.
 
-- [REA reverse-engineer-anything](https://github.com/morluto/rea/blob/main/.agents/skills/reverse-engineer-anything/SKILL.md): evidence-first analysis and explicit unknowns. Reading the skill does **not** install its runtime or inspect an application.
-- [Microsoft Playwright persistent profiles](https://github.com/microsoft/playwright.dev/blob/main/mcp/configuration/user-profile.mdx): documented browser-state persistence and isolation; this does not constitute anti-fingerprint technology.
-- [BrowserOpsLab/playwright-browser-profile-manager](https://github.com/BrowserOpsLab/playwright-browser-profile-manager): example of local browser profile management, explicitly without security-control bypass. No third-party code copied.
+## Why full parity cannot be certified in this change
 
-Before reusing any external code: review the exact license, provenance, vulnerabilities, update process and functionality. A GitHub repository being public does not mean its packaged browser engine is open-source or free to redistribute.
+Feature names, shared browser versions or similar screenshots do not establish the rendering engine, fingerprint consistency, synchronization semantics, support matrix or licensing equivalence. We lack an authoritative GenLogin binary for identical harmless test scenarios. Furthermore, Sybil labels are judgments made by platforms and can depend on factors beyond the browser. No anti-Sybil guarantee is possible or offered.
 
-## Sybil evaluation boundary
-
-Sybil decisions are made by platforms, not browsers. One-person-one-account rules, transaction links, coordinated behavior, account ownership, KYC and platform terms may be involved. It is impossible to guarantee a browser will never be flagged. AutumnGenLogin will not claim immunity, emulate unrelated people to defeat Sybil controls, or bypass service anti-abuse systems.
-
-Legitimate product quality priorities: reproducible browser versions, stable per-profile storage, cross-process locks, secure credential handling, optional privacy diagnostics, safe automation and regression testing against sites owned or authorized by the operator.
-
-## Evidence required for any later compatibility statement
-
-- Obtain an authorized GenLogin installer; record vendor license, version, SHA-256 and provenance.
-- Document user-visible tasks with synthetic accounts and no production cookies or secrets.
-- If licensing and authorization permit, run REA on that exact executable, retain the inspection Evidence record and separately verify observations using independent tests.
-- Compare functional behavior in a test matrix. Never describe an inferred architecture as an observed implementation.
-- Validate AutumnGenLogin in a fresh Windows VM with installed Chrome/Edge, actual GUI interactions, process termination/recovery, profile migration and proxy failure scenarios.
-
-## Current deliverable
-
-AutumnGenLogin v0.3 adds cross-process profile locks and offline diagnostic reporting. This improves reliability but does not change fingerprint behavior or claim GenLogin/Titan parity.
+**Release decision: do not build or publish a new AutumnGenLogin EXE.** The user requires proven full GenLogin parity, not a partial feature expansion. Preserve developer-source changes and tests, keep `docs/RELEASE_GATES.md` truthful, and do not merge uncertain external reverse-engineered code.

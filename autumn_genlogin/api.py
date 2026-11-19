@@ -11,9 +11,10 @@ from urllib.parse import urlparse
 
 
 class LocalAPI:
-    def __init__(self, store, manager):
+    def __init__(self, store, manager, schedules=None):
         self.store = store
         self.manager = manager
+        self.schedules = schedules
         self.token = secrets.token_urlsafe(32)
         self.server = None
         self.thread = None
@@ -62,6 +63,20 @@ class LocalAPI:
                         {"id": p.id, "name": p.name, "group": p.group_name, "running": controller.manager.active(p.id)}
                         for p in controller.store.all()
                     ]})
+                elif path == "/v1/schedules" and controller.schedules is not None:
+                    self._json(200, {"schedules": [
+                        {"id":job.id,"profile_id":job.profile_id,
+                         "next_run_utc":job.next_run_utc,"interval_seconds":job.interval_seconds,
+                         "enabled":job.enabled,"last_status":job.last_status,"last_error":job.last_error}
+                        for job in controller.schedules.list()]})
+                elif len(path.strip("/").split("/")) == 4 and path.endswith("/recording"):
+                    parts = path.strip("/").split("/")
+                    if parts[:2] != ["v1", "profiles"]:
+                        return self._json(404, {"error":"Not found"})
+                    try: pid = controller.store.get(parts[2]).id
+                    except KeyError: return self._json(404, {"error":"Profile not found"})
+                    except ValueError: return self._json(400, {"error":"Invalid profile ID"})
+                    self._json(200, {"steps":controller.manager.recorded_steps(pid)})
                 elif len(path.strip("/").split("/")) == 5 and path.endswith("/runs/latest"):
                     parts = path.strip("/").split("/")
                     if parts[:2] != ["v1", "profiles"]:
@@ -105,6 +120,14 @@ class LocalAPI:
                         if not isinstance(data, dict) or "steps" not in data:
                             raise ValueError("Missing required field: steps")
                         controller.manager.run_steps(pid, data["steps"])
+                    elif action == "run-graph":
+                        if not isinstance(data, dict) or "graph" not in data:
+                            raise ValueError("Missing required field: graph")
+                        controller.manager.run_graph(pid, data["graph"])
+                    elif action == "record-start":
+                        controller.manager.start_recording(pid)
+                    elif action == "record-stop":
+                        controller.manager.stop_recording(pid)
                     elif action == "cancel":
                         controller.manager.cancel(pid)
                     else:

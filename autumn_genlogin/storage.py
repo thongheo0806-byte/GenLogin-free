@@ -6,6 +6,7 @@ from contextlib import contextmanager, closing
 import os
 import shutil
 import sqlite3
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -30,7 +31,9 @@ def _utc() -> str:
 
 
 class Store:
-    def __init__(self, base: Path | None = None, *, initialize: bool = True):
+    def __init__(self, base: Path | None = None, *, initialize: bool = True, reuse_connections: bool = False):
+        self._reuse_connections = reuse_connections
+        self._thread_connections = threading.local()
         self.base = (base or data_home()).resolve()
         self.browser_dir = self.base / "browser-data"
         self.shot_dir = self.base / "screenshots"
@@ -63,11 +66,22 @@ class Store:
 
     @contextmanager
     def _connect(self, *, readonly: bool = False):
-        conn = (sqlite3.connect(self.db.as_uri() + "?mode=ro", uri=True, timeout=10)
-                if readonly else sqlite3.connect(self.db, timeout=10))
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA busy_timeout = 10000")
-        conn.execute("PRAGMA foreign_keys = ON")
+        """Use a per-thread connection in the desktop app; tests can opt out.
+
+        Each connection belongs exclusively to its creator thread. Reused
+        connections are committed/rolled back at every transaction boundary.
+        Call close_thread_connection on orderly worker/GUI shutdown.
+        """
+        attr = "readonly" if readonly else "writable"
+        conn = getattr(self._thread_connections, attr, None) if self._reuse_connections else None
+        if conn is None:
+            conn = (sqlite3.connect(self.db.as_uri() + "?mode=ro", uri=True, timeout=10)
+                    if readonly else sqlite3.connect(self.db, timeout=10))
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA busy_timeout = 10000")
+            conn.execute("PRAGMA foreign_keys = ON")
+            if self._reuse_connections:
+                setattr(self._thread_connections, attr, conn)
         try:
             yield conn
             conn.commit()
@@ -75,7 +89,18 @@ class Store:
             conn.rollback()
             raise
         finally:
-            conn.close()
+            if not self._reuse_connections:
+                conn.close()
+
+    def close_thread_connection(self) -> None:
+        """Close connections owned by the calling thread, never another one."""
+        for attr in ("readonly", "writable"):
+            conn = getattr(self._thread_connections, attr, None)
+            if conn is not None:
+                try:
+                    conn.close()
+                finally:
+                    delattr(self._thread_connections, attr)
 
     def all(self, *, readonly: bool = False) -> list[Profile]:
         with self._connect(readonly=readonly) as c:
@@ -99,7 +124,7 @@ class Store:
             if extension_table and conn.execute(
                 "SELECT 1 FROM profile_extensions WHERE profile_id=? LIMIT 1", (profile.id,)
             ).fetchone():
-                raise ValueError("Detach Chromium extensions before switching to Chrome/Edge")
+                raise ValueError("Detach Chromium extensions before switching browser engine")
         now = _utc()
         current = conn.execute("SELECT created_at FROM profiles WHERE id = ?", (profile.id,)).fetchone()
         profile.created_at = current[0] if current else (profile.created_at or now)
@@ -157,6 +182,9 @@ class Store:
                     exists = c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='profile_extensions'").fetchone()
                     if exists:
                         c.execute("DELETE FROM profile_extensions WHERE profile_id = ?", (profile_id,))
+                    has_jobs = c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='schedules'").fetchone()
+                    if has_jobs:
+                        c.execute("DELETE FROM schedules WHERE profile_id=?", (profile_id,))
                     result = c.execute("DELETE FROM profiles WHERE id = ?", (profile_id,))
                     if result.rowcount != 1:
                         raise KeyError("Profile not found")

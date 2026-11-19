@@ -59,9 +59,57 @@ jobs:
         run: python -m playwright install chromium
       - name: Install test-only process inspection library
         run: python -m pip install 'psutil>=6,<8'
+      - name: Run shared-driver integration tests
+        env:
+          AUTUMN_E2E: '1'
+        run: python -m unittest discover -s tests -p "test_shared_browser_integration.py" -v
       - name: Run actual browser integration tests
         env:
           AUTUMN_E2E: '1'
         run: python -m unittest discover -s tests -p "test_browser_integration.py" -v
 # IMPORTANT: This workflow deliberately has NO EXE build or release job.
 # User requires demonstrated feature parity before a release build is allowed.
+
+  multi-engine-smoke:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install runtime requirements
+        run: python -m pip install -r requirements.txt
+      - name: Install Chromium, Firefox, WebKit browser binaries
+        run: python -m playwright install chromium firefox webkit
+      - name: Real Firefox and WebKit profile smoke tests
+        env:
+          AUTUMN_E2E: '1'
+          AUTUMN_MULTI_ENGINE: '1'
+        run: python -m unittest discover -s tests -p "test_shared_browser_integration.py" -k multiengine -v
+# No PyInstaller/EXE jobs. Release gates still block binary publication.
+
+  branded-engine-smoke:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install runtime requirements
+        run: python -m pip install -r requirements.txt
+      - name: Verify preinstalled Chrome/Edge versions
+        shell: pwsh
+        run: |
+          $chrome="${env:ProgramFiles}\Google\Chrome\Application\chrome.exe"
+          $edge="${env:ProgramFiles(x86)}\Microsoft\Edge\Application\msedge.exe"
+          if (-not (Test-Path $chrome)) { throw "Chrome is not installed on runner" }
+          if (-not (Test-Path $edge)) { throw "Edge is not installed on runner" }
+          Write-Output (Get-Item $chrome).VersionInfo.ProductVersion
+          Write-Output (Get-Item $edge).VersionInfo.ProductVersion
+      - name: Launch actual Google Chrome and Microsoft Edge
+        env:
+          AUTUMN_E2E: '1'
+          AUTUMN_BRANDED_ENGINE: '1'
+        run: python -m unittest discover -s tests -p "test_shared_browser_integration.py" -k branded -v

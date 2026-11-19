@@ -52,3 +52,14 @@ Only after all necessary gates are demonstrated can CI be changed to produce a W
 ### 2026-11-19 follow-up
 
 [ ] Validate Windows existing `.venv` upgrade (`tzdata`), corruption dialog, staging cleanup after a restart, API storage error and sensitive-memory expiry through the current CI run. These regressions have been added to source and CI; mark verified only after their executed Windows run succeeds. This does not reopen the EXE build gate.
+
+### v0.5-dev code milestones (NOT a parity release)
+
+- [x] Source implementation of bounded condition/repeat graph, graphical editor, safe click/selector recorder, durable local scheduling.
+- [x] Source implementation of an encrypted, self-hosted **metadata-only** sync service and server-side team RBAC. Full automatic session sync remains **not implemented**.
+- [x] Source implementation of one shared async Playwright driver and optional per-thread SQLite connections, plus Chromium/Chrome/Edge/Firefox/WebKit adapters.
+- [ ] Run and preserve **complete** Windows CI proof for all new features, including headed Tk graph editor, cloud conflicts under concurrency, long-running schedules, browser crash recovery and Chrome/Edge. Partial evidence: Windows CI `44457650505` passed 5/5 jobs (unit/GUI structure, Chromium shared driver + recorder/graph, Firefox/WebKit smoke, branded Chrome/Edge smoke and venv upgrade). These tests do **not** establish all features or Titan parity.
+- [ ] Browser performance, GUI accessibility and production incident recovery validation.
+- [ ] Direct, legally authorized comparison with pinned GenLogin/Titan binary. This evidence is not available, so the release HOLD remains.
+
+See `FEATURES_050.md`, `TEAM_SYNC_OPERATIONS.md`, and `TITAN_VERIFICATION_PROTOCOL.md` for precise limitations.
