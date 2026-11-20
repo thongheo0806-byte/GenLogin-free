@@ -18,6 +18,7 @@ from uuid import UUID, uuid4
 
 from .engines import browser_options
 from .extensions import ExtensionLibrary
+from .image_actions import ImageTemplateLibrary, find_image_center
 from .graph import execute_graph, validate_graph
 from .locks import ProfileLease
 from .models import validated_steps, valid_http_url
@@ -90,6 +91,7 @@ class SharedBrowserManager:
         self.store=store
         self.headless=headless
         self.extensions=ExtensionLibrary(store)
+        self.image_templates=ImageTemplateLibrary(store)
         self.events: queue.Queue[tuple[str,str,str]]=queue.Queue()
         self._lock=threading.RLock()
         self._sessions:dict[str,Session]={}
@@ -373,6 +375,14 @@ class SharedBrowserManager:
         self.events.put((pid,"log",f"Step {i}: {action}"))
         if action=="goto":await page.goto(step["url"],wait_until="domcontentloaded",timeout=30000)
         elif action=="click":await page.locator(step["selector"]).first.click(timeout=20000)
+        elif action=="click_image":
+            template = self.image_templates.read(step["template_id"])
+            # Keep screenshot transient. CSS scale avoids device-pixel-ratio drift.
+            screen = await page.screenshot(full_page=False, scale="css")
+            x, y = await asyncio.to_thread(find_image_center,screen,template,step["confidence"])
+            if session.cancel.is_set():
+                raise asyncio.CancelledError()
+            await page.mouse.click(x,y)
         elif action=="fill":await page.locator(step["selector"]).first.fill(step["text"],timeout=20000)
         elif action=="press":await page.locator(step["selector"]).first.press(step["key"],timeout=20000)
         elif action=="check":await page.locator(step["selector"]).first.check(timeout=20000)

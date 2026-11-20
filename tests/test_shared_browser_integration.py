@@ -195,6 +195,38 @@ class SharedBrowserRealTests(unittest.TestCase):
         self.assertNotIn("Autumn test",str(list(self.manager.events.queue)))
         self.manager.stop(profile.id)
 
+    def test_real_chromium_click_by_opt_in_local_image_template(self):
+        """Playwright CSS screenshot -> local OpenCV match -> real mouse click."""
+        import importlib.util
+        if importlib.util.find_spec("cv2") is None:
+            self.skipTest("requires optional OpenCV dependency")
+        profile=self.store.save(Profile(name="image-click",browser="chromium",start_url=self.origin))
+        self.manager.start(profile.id)
+        self.assertTrue(eventually(lambda:(s:=self.manager._sessions.get(profile.id))
+                                  is not None and s.ready.is_set()))
+        async def capture_template():
+            page=self.manager._sessions[profile.id].context.pages[0]
+            return await page.locator("#press").screenshot(scale="css")
+        image=self.manager._submit(capture_template()).result(timeout=20)
+        source=Path(self.tmp.name)/"explicit-target.png"
+        source.write_bytes(image)
+        ident=self.manager.image_templates.import_png(source)
+        run_id=self.manager.run_steps(profile.id,[{
+            "action":"click_image","template_id":ident,"confidence":0.94
+        }])
+        self.assertTrue(eventually(lambda:(self.manager.last_run(profile.id) or {}).get("status")
+                                  in ("succeeded","failed"),timeout=30))
+        result=self.manager.last_run(profile.id)
+        self.assertEqual(result["status"],"succeeded",result["error"])
+        self.assertEqual(result["id"],run_id)
+        async def clicked():
+            page=self.manager._sessions[profile.id].context.pages[0]
+            return await page.evaluate("document.body.dataset.clicked")
+        self.assertEqual(self.manager._submit(clicked()).result(timeout=15),"yes")
+        self.assertEqual(result["extracted"],[])
+        self.assertNotIn("explicit-target.png",str(list(self.manager.events.queue)))
+        self.manager.stop(profile.id)
+
     def test_cancel_interrupts_inflight_selector_wait_without_closing_profile(self):
         """A cancellation must not wait for Playwright's 20-second selector timeout."""
         profile=self.store.save(Profile(name="cancellable",browser="chromium",start_url=self.origin))

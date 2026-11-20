@@ -1,0 +1,3 @@
+# Optional local screenshot matching (OpenCV). Do not add to default runtime.
+-r requirements.txt
+opencv-python-headless>=4.10,<5

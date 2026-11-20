@@ -6,7 +6,8 @@ from autumn_genlogin.visual_workflow import FIELDS
 
 class VisualWorkflowTests(unittest.TestCase):
     def test_every_visual_action_is_validated_by_engine(self):
-        example = {"url": "https://example.com", "selector": "h1", "text": "value", "value": "1", "key": "Enter", "seconds": 0.1}
+        example = {"url": "https://example.com", "selector": "h1", "text": "value", "value": "1",
+                   "key": "Enter", "seconds": 0.1, "confidence": 0.94, "template_id": "a" * 64}
         for action, keys in FIELDS.items():
             step = {"action": action, **{key: example[key] for key in keys}}
             self.assertEqual(validated_steps([step]), [step])

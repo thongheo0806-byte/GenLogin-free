@@ -16,7 +16,7 @@ The [official public release notes](https://genlogin.com/release-notes) currentl
 | Visual graph automation | [Automation](https://genlogin.com/automation) | Bounded action/condition/repeat plus ephemeral literal and captured-text variables, Tk graph editor | Full GenLogin node catalog, parallel branches, advanced retries, GUI usability |
 | Recorder | [Automation](https://genlogin.com/automation) | Capture click/select/form selectors with private values redacted | Complex action replay and multi-page tests |
 | Scheduler | [Automation](https://genlogin.com/automation) | SQLite one-shot/interval scheduler, manual retry, per-run journal, terminal callback from real BrowserManager, authenticated run history API and GUI | Windows end-to-end, long-running resilience, external-process crash recovery and complete workflow traces; active app required |
-| Image click, video, AI, synchronizer, miniapps | [Automation](https://genlogin.com/automation) | **Not implemented** | Complete independent features and tests |
+| Image click, video, AI, synchronizer, miniapps | [Automation](https://genlogin.com/automation) | **Optional, bounded local OpenCV image-template click (development)**; no video, AI, synchronizer or miniapps | Visual scale/zoom robustness, full image-recognition stack, remaining independent features and tests |
 | Full cloud browser-session sync | [Local/cloud profiles](https://docs.genlogin.com/group-profiles/local-and-cloud-profiles) | **Not implemented** | Secure session transfer, conflicts, rollback |
 | Optional team metadata sync | [Sharing](https://docs.genlogin.com/group-profiles/share-profile) | Encrypted metadata/workflows, loopback RBAC and revisions; redirect bearer-token fix | Production HTTPS, disaster recovery, wider security tests |
 | Public API compatibility | [GenLogin API](https://docs.genlogin.com/genlogin-api/profile-api/1.-profile-list) | Authenticated, native /v1 loopback API and no-redirect Python SDK (development) | GenLogin protocol parity, stable contract versioning, external integration acceptance |
@@ -88,3 +88,10 @@ The [official public release notes](https://genlogin.com/release-notes) currentl
 - Captured page text is **tainted** and may populate later page actions (e.g. a form field) but may not be inserted into a `goto` URL, preventing accidental URL-based page-data exfiltration. Literal variables can supply navigation components.
 - Variables live only inside the asynchronous execution frame; neither terminal run result, SQLite batch/scheduler history nor activity log receives values. Capture uses real Playwright `inner_text` with a bounded locator timeout.
 - This development subset does not add a general-purpose scripting language, database bindings, flow-wide persistent variables, arbitrary network requests, or GenLogin/Titan compatibility.
+
+## 2026-11-20 optional OpenCV image click
+
+- Opt-in dependency `requirements-vision.txt` does not expand core runtime install. Users import explicit PNGs with GUI confirmation. A local SHA-256 hash ID, not a filesystem path, is referenced by `click_image` steps and graph actions.
+- Local OpenCV template matching checks bounded dimensions, variance, confidence and duplicate hits against a CSS-scale Playwright viewport screenshot. No cloud image service, OCR or AI model is invoked; screenshot bytes are transient in memory and not stored in scheduler/batch journal.
+- On missing, ambiguous or corrupt PNG the action fails closed. DOM/visual layout changes, zoom, scroll, anti-aliasing and browser-version differences can still cause false negative or positive results; not a reliability or parity guarantee.
+- Windows CI must include optional dependencies and an actual Chromium click regression before marking the development change tested. See `OPEN_SOURCE_INTEGRATIONS.md` for license and candidate reviews. No GenLogin/Titan similarity or anti-detection guarantee is implied.
