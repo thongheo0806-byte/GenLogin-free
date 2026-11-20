@@ -57,3 +57,10 @@
 - The package intentionally excludes proxy credentials and all OS vault passwords, locally installed extension packages, screenshots, API tokens and team sync keys. On restore, users must manually configure network settings, verify browser engine compatibility and re-attach trusted extensions.
 - Individual files are limited to 256 MiB and total uncompressed session data to 1 GiB, max 12,000 entries. Profiles beyond these bounds require a separate tested backup strategy. Production disaster recovery, browser migration and backup lifecycle testing remain outstanding.
 - A missing passphrase cannot be recovered. Do not use the format as a cloud sync protocol or as evidence of full GenLogin profile portability.
+
+## 2026-11-20 extension version migration review
+
+- Local MV3 extension updates install a candidate under a separate immutable package UUID. No browser attaches it automatically. The GUI shows added API/host permissions and requires confirmation before migrating a profile's extension linkage.
+- A matching extension name and changed version do **not** prove a common publisher or a trusted package. There is no code audit, signed publisher identity, Web Store verification or automatic update. Users must verify the extension ZIP provenance independently.
+- Per-profile cross-process leases block migration or rollback while the attached Chromium profile is running. SQLite transactions preserve all-or-nothing linkage changes and an upgrade record offers explicit rollback while both package versions remain available.
+- If linkage changes since installation, rollback fails closed and requires manual review rather than silently overwriting user choices. Package removal is blocked while an applied rollback record references it.
