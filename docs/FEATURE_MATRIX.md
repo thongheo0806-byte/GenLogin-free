@@ -7,7 +7,7 @@ The [official public release notes](https://genlogin.com/release-notes) currentl
 | Capability | GenLogin reference | AutumnGenLogin development subset | Parity/evidence gap |
 |---|---|---|---|
 | Profile CRUD, clone, local session | [Profiles](https://docs.genlogin.com/group-profiles/create-profile/overview) | SQLite catalog, persistent user data, cross-process locks, Windows Chromium tests | GUI end-to-end, migration and failure injection |
-| Groups, tags, bulk management | [Groups](https://docs.genlogin.com/group-profiles/group-profiles) | Basic groups/tags and local profile list | Bulk workflow launch, UI performance, hierarchy |
+| Groups, tags, bulk management | [Groups](https://docs.genlogin.com/group-profiles/group-profiles) | Basic groups/tags, plus bounded local batch automation across a selected group with safe cancellation | Full GenLogin task scheduler/group assignment equivalence, durable batch history, UI performance, hierarchy |
 | Titan/fingerprint rendering | [Technology](https://docs.genlogin.com/) | **Not implemented or verified**. Playwright engines are not Titan | Authorized baseline executable, differential tests, licenses |
 | Proxy, locale, WebRTC | [Network](https://docs.genlogin.com/group-profiles/create-profile/network-and-webrtc) | Validated profile settings and proxy options | Real proxy and leak/consistency verification |
 | Engine compatibility | [Playwright engines](https://playwright.dev/docs/browsers) | Chromium, Chrome, Edge, Firefox and WebKit launch lanes passed Windows CI | Multi-version compatibility, long-running crashes |
@@ -40,3 +40,12 @@ The [official public release notes](https://genlogin.com/release-notes) currentl
 - The GUI Scheduler tab shows recent executions. Opt-in local API GET `/v1/schedules/history?limit=50` is bearer-token protected; optional `schedule_id` filters a job; limit is 1-200.
 - Deleting a profile or a schedule removes its journal entries. Old v0.5 SQLite profile data remains valid, and the new table is created without altering the profile schema.
 - A Windows Chromium end-to-end test is required for acceptance of actual completion. This is an incremental architecture improvement, not GenLogin/Titan parity.
+
+## 2026-11-20 bounded batch feature
+
+- Uses one strict, already validated local JSON/graph workflow on up to 200 explicitly selected profile UUIDs. A dedicated `Batch tasks` tab requires choosing one specific group and confirming the number of profiles. The backend caps parallel attempts at six.
+- Profiles remain independent persistent contexts. Unlike a native synchronizer, browser actions are **not mirrored live** between profiles.
+- Each batch reports queued/submitting/running/succeeded/failed/cancelled/uncertain per-profile states and safely redacted exception types. Cancellation requests only affect runs whose UUID matches that batch's accepted BrowserManager run; queued profiles are never launched after cancellation.
+- The batch API is **disabled by default** along with the local API. On opt-in, bearer-authenticated endpoints include POST `/v1/batches`, GET `/v1/batches`, GET `/v1/batches/{uuid}` and POST `/v1/batches/{uuid}/cancel`.
+- Batch records are intentionally **in memory only**, retain up to 30 recent batches and do not automatically resume after process restart. Unlike the schedule journal, no workflow values or browser page content are written to disk by this component. Timeouts and late browser completions are marked uncertain, not falsely 'succeeded'.
+- Production acceptance still needs resource stress, long-running profile group tests, portable error recovery and a legally grounded GenLogin parity comparison.
