@@ -173,7 +173,11 @@ class LocalAPI:
                 except (ValueError, TypeError, json.JSONDecodeError) as exc:
                     self._json(400, {"error": str(exc)[:200]})
                 except KeyError:
-                    self._json(404, {"error": "Profile not found"})
+                    self._json(404, {"error": "Requested resource not found"})
+                except RuntimeError:
+                    # Busy browsers and exhausted batch slots are conflicts,
+                    # not a dropped HTTP connection or leaked exception string.
+                    self._json(409, {"error": "Resource busy or action cannot be started"})
                 except (sqlite3.Error, OSError):
                     self._json(503, {"error": "Local storage unavailable; run Diagnostics"})
 
@@ -186,3 +190,6 @@ class LocalAPI:
             self.server.shutdown()
             self.server.server_close()
             self.server = None
+            if self.thread and self.thread is not threading.current_thread():
+                self.thread.join(timeout=5)
+            self.thread = None
