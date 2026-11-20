@@ -11,7 +11,7 @@ The [official public release notes](https://genlogin.com/release-notes) currentl
 | Titan/fingerprint rendering | [Technology](https://docs.genlogin.com/) | **Not implemented or verified**. Playwright engines are not Titan | Authorized baseline executable, differential tests, licenses |
 | Proxy, locale, WebRTC | [Network](https://docs.genlogin.com/group-profiles/create-profile/network-and-webrtc) | Validated profile settings and proxy options | Real proxy and leak/consistency verification |
 | Engine compatibility | [Playwright engines](https://playwright.dev/docs/browsers) | Chromium, Chrome, Edge, Firefox and WebKit launch lanes passed Windows CI | Multi-version compatibility, long-running crashes |
-| Extensions | [Extensions](https://docs.genlogin.com/group-profiles/extensions) | Local opt-in Manifest V3 library for bundled Chromium | Marketplace, trust audit, updates/rollback |
+| Extensions | [Extensions](https://docs.genlogin.com/group-profiles/extensions) | Local MV3 import plus confirmed offline version updates/rollback on stopped profiles (development) | Verified publisher signatures, marketplace, auto-updates, extension API compatibility |
 | Sequential automation | [Automation](https://genlogin.com/automation) | Typed JSON actions, results and local API | Advanced actions, error recovery, SDK |
 | Visual graph automation | [Automation](https://genlogin.com/automation) | Bounded condition/repeat/action graph, Tk editor | Full node catalog, variables, parallel branches, UI usability |
 | Recorder | [Automation](https://genlogin.com/automation) | Capture click/select/form selectors with private values redacted | Complex action replay and multi-page tests |
@@ -56,3 +56,11 @@ The [official public release notes](https://genlogin.com/release-notes) currentl
 - This interrupts an in-flight selector/navigation wait rather than waiting up to 20 seconds for the Playwright action timeout. A workflow launched on a manually opened browser should cancel without closing that profile.
 - The Windows Chromium integration test intentionally waits for a nonexistent selector, requests cancellation and verifies a terminal `cancelled` result within five seconds. This tests manager behavior, not raw Playwright alone.
 - Cancellation cannot undo actions already accepted by a website, and it is not a guarantee that all outstanding I/O has stopped before a browser shutdown.
+
+## 2026-11-20 offline extension updates
+
+- A candidate Manifest V3 ZIP is imported but remains disabled until the user explicitly reviews its full new API and host permissions and confirms migration.
+- Updates only connect packages with exactly matching extension names and differing version strings. **Names do not authenticate publisher identity** and no signature validation is claimed.
+- Attached profiles must be closed; per-profile OS leases prevent updates/rollback while a Chromium instance has the profile open. Previous package contents are immutable and retained.
+- The SQLite upgrade record includes old/new immutable package UUIDs and affected profile UUIDs. Rollback is an explicit user action that refuses ambiguous association changes instead of guessing.
+- No Chrome Web Store integration, unattended download or automatic update is implemented. Source trust, permissions, compatibility and privacy require independent verification before production release.

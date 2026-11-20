@@ -255,6 +255,7 @@ class App:
         extension_header.pack(fill="x", pady=(0, 12))
         ttk.Label(extension_header, text="Locally installed Manifest V3 extensions", style="Heading.TLabel").pack(side="left")
         for title, cmd in (("Add folder", self.install_extension_folder), ("Add ZIP", self.install_extension_zip),
+                           ("Update ZIP", self.update_extension_zip), ("Rollback update", self.rollback_extension_update),
                            ("Attach to selected profile", self.attach_extension), ("Detach", self.detach_extension),
                            ("Remove", self.remove_extension)):
             ttk.Button(extension_header, text=title, command=cmd).pack(side="right", padx=(7, 0))
@@ -933,6 +934,73 @@ class App:
                                 "Use Attach to allow this extension in a selected Chromium profile.", parent=self.root)
         except Exception as exc:
             messagebox.showerror("Install extension", str(exc), parent=self.root)
+
+    def update_extension_zip(self):
+        old = self.selected_extension()
+        if not old:
+            return
+        path = filedialog.askopenfilename(title="Choose a reviewed newer MV3 extension package",
+                            filetypes=[("ZIP archive","*.zip")])
+        if not path:
+            return
+        candidate = None
+        try:
+            candidate = self.extensions.prepare_update(old.id,Path(path),archive=True)
+            additional_api = sorted(set(candidate.permissions) - set(old.permissions))
+            additional_host = sorted(set(candidate.host_permissions) - set(old.host_permissions))
+            if not messagebox.askyesno("Review extension update permissions",
+                                       f"Update {old.name} from {old.version} to {candidate.version}?\n"
+                                       "Review source trust: same extension name is NOT a developer signature.\n\n"
+                                       f"NEW API permissions: {', '.join(additional_api) or '(none)'}\n"
+                                       f"NEW host access: {', '.join(additional_host) or '(none)'}\n\n"
+                                       "Affected profiles must all be stopped. "
+                                       "The old package is retained for rollback.",
+                                       parent=self.root):
+                self.extensions.remove(candidate.id)
+                return
+            update = self.extensions.apply_update(old.id,candidate.id)
+            self.refresh_extensions()
+            self.notice(f"Updated {old.name} on {len(update.profile_ids)} stopped profiles")
+            messagebox.showinfo("Extension updated",
+                                f"New version imported: {candidate.version}\n"
+                                "Restart affected profiles to load the new package.\n"
+                                "Keep the old package if rollback may be necessary.",
+                                parent=self.root)
+        except Exception as exc:
+            if candidate:
+                try:
+                    self.extensions.remove(candidate.id)
+                except (ValueError, KeyError, OSError):
+                    pass
+            messagebox.showerror("Update extension",str(exc),parent=self.root)
+
+    def rollback_extension_update(self):
+        record = self.selected_extension()
+        if not record:
+            return
+        updates = [u for u in self.extensions.list_upgrades()
+                   if u.new_id == record.id and u.status == "applied"]
+        if not updates:
+            return messagebox.showinfo("Rollback",
+                        "Select a newer extension package with an active update record.",
+                        parent=self.root)
+        latest = updates[0]
+        previous = next((p for p in self.extensions.list() if p.id == latest.old_id), None)
+        if previous is None:
+            return messagebox.showerror("Rollback","Previous extension version is missing.",parent=self.root)
+        if not messagebox.askyesno("Rollback extension",
+                                   f"Restore {record.name} from {record.version} to {previous.version} "
+                                   f"on {len(latest.profile_ids)} affected profiles?\n\n"
+                                   "All affected browsers must be stopped. Current website actions "
+                                   "cannot be undone. Restart profiles after rollback.",
+                                   parent=self.root):
+            return
+        try:
+            self.extensions.rollback_update(latest.id)
+            self.refresh_extensions()
+            self.notice(f"Rolled back {record.name} to {previous.version}")
+        except Exception as exc:
+            messagebox.showerror("Rollback extension",str(exc),parent=self.root)
 
     def extension_details(self):
         record = self.selected_extension()
