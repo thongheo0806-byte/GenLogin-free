@@ -229,6 +229,7 @@ class App:
         flow_header.pack(fill="x", pady=(0, 10))
         ttk.Label(flow_header, text="Workflow automation", style="Heading.TLabel").pack(side="left")
         for title, action in (("Load", self.load_workflow), ("Save", self.save_workflow),
+                              ("Import image", self.import_image_template),
                               ("Record", self.start_recorder), ("Stop recording", self.stop_recorder),
                               ("Use recording", self.import_recording),
                               ("Run", self.run_workflow), ("Cancel", self.cancel_workflow)):
@@ -532,6 +533,31 @@ class App:
         if self.flow_tabs.index("current") == 2:
             return self.graph_builder.get_graph()
         return validated_steps(json.loads(self.workflow.get("1.0", "end")))
+
+    def import_image_template(self):
+        path = filedialog.askopenfilename(title="Import distinctive image-click template",
+                filetypes=[("PNG image", "*.png")])
+        if not path:
+            return
+        if not messagebox.askyesno("Local image template",
+                "Import this PNG for local viewport matching?\n"
+                "Screenshots and the template remain on this computer.\n"
+                "Avoid pictures containing passwords or personal information.\n"
+                "Only a unique, high-confidence match may be clicked.",
+                parent=self.root):
+            return
+        try:
+            ident = self.manager.image_templates.import_png(Path(path))
+            self.root.clipboard_clear()
+            self.root.clipboard_append(ident)
+            self.notice("Image template imported; SHA-256 ID copied to clipboard.")
+            messagebox.showinfo("Image click template",
+                "Template ID copied to clipboard.\n"
+                "Add the 'click_image' action and paste it as template_id.\n"
+                "Set confidence to 0.94. The target must be visible in the viewport.",
+                parent=self.root)
+        except Exception as exc:
+            messagebox.showerror("Image template", str(exc), parent=self.root)
 
     def run_workflow(self):
         pid = self.selected_id()
