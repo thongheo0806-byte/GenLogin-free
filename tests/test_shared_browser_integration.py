@@ -134,6 +134,26 @@ class SharedBrowserRealTests(unittest.TestCase):
         self.assertNotIn("Autumn test",raw)
         self.assertTrue(eventually(lambda:not self.manager.active(profile.id),timeout=20))
 
+    def test_real_browser_batch_runs_three_isolated_profiles(self):
+        from autumn_genlogin.batch import BatchRunner
+
+        ids=[]
+        for name in ("batch-a","batch-b","batch-c"):
+            ids.append(self.store.save(Profile(name=name,browser="chromium",start_url=self.origin)).id)
+        runner=BatchRunner(self.store,self.manager)
+        batch_id=runner.start(ids,[
+            {"action":"wait_for","selector":"#title"},
+            {"action":"extract_text","selector":"#title"}
+        ],max_parallel=2)
+        self.assertTrue(eventually(lambda:runner.get(batch_id)["status"] in
+                         ("succeeded","partial","cancelled"),timeout=60))
+        report=runner.get(batch_id)
+        self.assertEqual(report["status"],"succeeded",report["items"])
+        self.assertEqual([i["profile_id"] for i in report["items"]],ids)
+        self.assertEqual({i["status"] for i in report["items"]},{"succeeded"})
+        self.assertNotIn("Autumn test",str(report))
+        self.assertTrue(eventually(lambda:all(not self.manager.active(pid) for pid in ids),timeout=20))
+
     def test_user_closes_last_page_and_recorder_redacts_text(self):
         profile=self.store.save(Profile(name="recorder",browser="chromium",start_url=self.origin))
         self.manager.start(profile.id)

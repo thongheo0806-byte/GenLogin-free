@@ -11,10 +11,11 @@ from urllib.parse import urlparse, parse_qs
 
 
 class LocalAPI:
-    def __init__(self, store, manager, schedules=None):
+    def __init__(self, store, manager, schedules=None, batches=None):
         self.store = store
         self.manager = manager
         self.schedules = schedules
+        self.batches = batches
         self.token = secrets.token_urlsafe(32)
         self.server = None
         self.thread = None
@@ -71,6 +72,19 @@ class LocalAPI:
                          "next_run_utc":job.next_run_utc,"interval_seconds":job.interval_seconds,
                          "enabled":job.enabled,"last_status":job.last_status,"last_error":job.last_error}
                         for job in controller.schedules.list()]})
+                elif path == "/v1/batches" and controller.batches is not None:
+                    params = parse_qs(urlparse(self.path).query)
+                    limit = int(params.get("limit", ["20"])[0])
+                    self._json(200, {"batches":controller.batches.list(limit=limit)})
+                elif path.startswith("/v1/batches/") and controller.batches is not None:
+                    parts = path.strip("/").split("/")
+                    if len(parts) != 3:
+                        return self._json(404, {"error":"Not found"})
+                    try:
+                        record = controller.batches.get(parts[2])
+                    except KeyError:
+                        return self._json(404, {"error":"Batch not found"})
+                    self._json(200, {"batch":record})
                 elif path == "/v1/schedules/history" and controller.schedules is not None:
                     params = parse_qs(urlparse(self.path).query)
                     limit = int(params.get("limit",["50"])[0])
@@ -118,6 +132,17 @@ class LocalAPI:
                         raise ValueError("Invalid request length or payload too large")
                     data = json.loads(self.rfile.read(content_length) or b"{}")
                     parts = urlparse(self.path).path.strip("/").split("/")
+                    if controller.batches is not None and parts == ["v1", "batches"]:
+                        if not isinstance(data,dict):
+                            raise ValueError("Expected JSON object")
+                        ident = controller.batches.start(data.get("profile_ids"),
+                            data.get("workflow"), max_parallel=data.get("max_parallel",3))
+                        self._json(202, {"accepted":True,"batch_id":ident})
+                        return
+                    if controller.batches is not None and len(parts)==4 and parts[:2]==["v1","batches"] and parts[3]=="cancel":
+                        controller.batches.cancel(parts[2])
+                        self._json(202, {"accepted":True})
+                        return
                     if len(parts) != 4 or parts[:2] != ["v1", "profiles"]:
                         self._json(404, {"error": "Not found"})
                         return

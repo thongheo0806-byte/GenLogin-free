@@ -12,6 +12,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
 from .api import LocalAPI
+from .batch import BatchRunner
 from .browser_shared import SharedBrowserManager
 from .graph_ui import GraphEditor
 from .scheduler import ScheduleStore, Scheduler
@@ -126,10 +127,11 @@ class App:
         self.scheduler = Scheduler(self.schedule_store, self.manager.start_workflow,
                                    dispatch_job=self._dispatch_scheduled_job)
         self.scheduler.start()
+        self.batches = BatchRunner(self.store, self.manager)
         self.cloud = None
         self.cloud_revision = {"profiles": 0, "workflows": 0}
         self.extensions = self.manager.extensions
-        self.api = LocalAPI(self.store, self.manager, self.schedule_store)
+        self.api = LocalAPI(self.store, self.manager, self.schedule_store, self.batches)
         self.root.title("AutumnGenLogin  |  Local Browser Studio")
         self.root.geometry("1230x780")
         self.root.minsize(990, 650)
@@ -182,9 +184,10 @@ class App:
         ttk.Button(top, text="Import metadata", command=self.import_profiles).pack(side="right")
         tabs = ttk.Notebook(page)
         tabs.pack(fill="both", expand=True)
-        profile_tab, flow_tab, extensions_tab, schedule_tab, cloud_tab, logs_tab = (ttk.Frame(tabs, padding=(0, 16)) for _ in range(6))
+        profile_tab, flow_tab, batch_tab, extensions_tab, schedule_tab, cloud_tab, logs_tab = (ttk.Frame(tabs, padding=(0, 16)) for _ in range(7))
         tabs.add(profile_tab, text="  Profiles  ")
         tabs.add(flow_tab, text="  Automation  ")
+        tabs.add(batch_tab, text="  Batch tasks  ")
         tabs.add(extensions_tab, text="  Extensions  ")
         tabs.add(schedule_tab, text="  Scheduler  ")
         tabs.add(cloud_tab, text="  Team sync  ")
@@ -263,6 +266,7 @@ class App:
         ttk.Button(extensions_tab, text="View permissions", command=self.extension_details).pack(anchor="e", pady=(10, 0))
         self.refresh_extensions()
         self._build_schedule_tab(schedule_tab)
+        self._build_batch_tab(batch_tab)
         self._build_cloud_tab(cloud_tab)
         ttk.Label(logs_tab, text="Session activity", style="Heading.TLabel").pack(anchor="w", pady=(0, 14))
         self.log_widget = tk.Text(logs_tab, font=("Cascadia Code", 10), bg=PANEL, fg=FG, insertbackground=FG, relief="flat", state="disabled", padx=15, pady=15)
@@ -525,6 +529,93 @@ class App:
             self.notice(f"Imported {len(steps)} recorded steps; all input values are blank for safety")
         except (TypeError, ValueError) as exc:
             messagebox.showerror("Recorder", str(exc), parent=self.root)
+
+    def _build_batch_tab(self, frame):
+        ttk.Label(frame, text="Run the current workflow across a selected profile group",
+                  style="Heading.TLabel").pack(anchor="w",pady=(0,8))
+        ttk.Label(frame, text="Select a specific Group in Profiles first, then review the workflow in Automation.\n"
+                  "Each profile gets an independent run; parallelism is capped to six local browsers.\n"
+                  "This is NOT live click synchronizer; batch results are in memory and are not resumed after restart.",
+                  style="Muted.TLabel").pack(anchor="w",pady=(0,12))
+        controls = ttk.Frame(frame)
+        controls.pack(fill="x",pady=(0,10))
+        ttk.Label(controls,text="Parallel profiles:").pack(side="left")
+        self.batch_parallel=tk.StringVar(value="2")
+        ttk.Combobox(controls,values=("1","2","3","4","5","6"),
+                     textvariable=self.batch_parallel,state="readonly",width=4).pack(side="left",padx=8)
+        ttk.Button(controls,text="Start selected group",style="Accent.TButton",
+                   command=self.start_group_batch).pack(side="left",padx=8)
+        ttk.Button(controls,text="Cancel selected",command=self.cancel_group_batch).pack(side="left",padx=8)
+        ttk.Button(controls,text="Refresh",command=self.refresh_batches).pack(side="left")
+        self.batch_tree=ttk.Treeview(frame,
+            columns=("group","status","success","failed","active","queued"),
+            show="headings",height=12)
+        for column,width in (("group",155),("status",130),("success",100),
+                             ("failed",100),("active",100),("queued",100)):
+            self.batch_tree.heading(column,text=column.title())
+            self.batch_tree.column(column,width=width)
+        self.batch_tree.pack(fill="both",expand=True)
+        self.batch_details=tk.StringVar(value="Select a batch and Refresh to see individual profile states.")
+        ttk.Label(frame,textvariable=self.batch_details,style="Muted.TLabel").pack(anchor="w",pady=10)
+        self.batch_tree.bind("<<TreeviewSelect>>",lambda *_:self.show_batch_details())
+        self.refresh_batches()
+
+    def start_group_batch(self):
+        group=self.group.get()
+        if not group or group=="All groups":
+            messagebox.showwarning("Batch group","Select one specific Group in Profiles first.",parent=self.root)
+            return
+        ids=[p.id for p in self._cached_profiles if p.group_name==group]
+        if not ids:
+            messagebox.showwarning("Batch group","No profiles in the selected group.",parent=self.root)
+            return
+        try:
+            steps=self.current_steps()
+            parallel=int(self.batch_parallel.get())
+            if not messagebox.askyesno("Confirm group automation",
+                                       f"Run the current workflow on {len(ids)} profiles in group '{group}' "
+                                       f"with at most {parallel} running at once?\n\n"
+                                       "The workflow may change website data. Review it before confirming.",
+                                       parent=self.root):
+                return
+            ident=self.batches.start(ids,steps,max_parallel=parallel)
+            self.refresh_batches()
+            self.notice(f"Batch started: {ident[:8]} ({len(ids)} profiles)")
+        except Exception as exc:
+            messagebox.showerror("Batch automation",str(exc),parent=self.root)
+
+    def cancel_group_batch(self):
+        selection=self.batch_tree.selection()
+        if not selection:
+            return
+        if messagebox.askyesno("Cancel batch",
+                               "Cancel queued runs and request cancellation of active runs?\n"
+                               "A browser action already submitted to a website may still complete.",
+                               parent=self.root):
+            self.batches.cancel(selection[0])
+            self.refresh_batches()
+
+    def refresh_batches(self):
+        self.batch_tree.delete(*self.batch_tree.get_children())
+        for batch in self.batches.list():
+            statuses=[item["status"] for item in batch["items"]]
+            success=statuses.count("succeeded")
+            failed=sum(s in ("failed","uncertain") for s in statuses)
+            active=sum(s in ("running","submitting") for s in statuses)
+            queued=statuses.count("queued")
+            group=f'{len(batch["items"])} profiles'
+            self.batch_tree.insert("", "end",iid=batch["id"],
+                values=(group,batch["status"],success,failed,active,queued))
+
+    def show_batch_details(self):
+        selection=self.batch_tree.selection()
+        if not selection:
+            return
+        batch=self.batches.get(selection[0])
+        detail=", ".join(f'{item["profile_id"][:8]}:{item["status"]}' for item in batch["items"][:20])
+        if len(batch["items"])>20:
+            detail+=f' (+{len(batch["items"])-20} more)'
+        self.batch_details.set(detail or "No runs")
 
     def _dispatch_scheduled_job(self, job):
         """Attach an exactly-once terminal callback to each scheduled run."""
@@ -880,12 +971,14 @@ class App:
 
     def _root_destroyed(self, event):
         if event.widget is self.root:
+            self.batches.cancel_all()
             self.scheduler.stop()
             self.manager.stop_all()
             self.store.close_thread_connection()
 
     def on_quit(self):
         self._shutdown_deadline = time.monotonic() + 8.0
+        self.batches.cancel_all()
         self.scheduler.stop()
         self.manager.stop_all()
         # shutdown API on a thread so the UI cannot freeze during shutdown
