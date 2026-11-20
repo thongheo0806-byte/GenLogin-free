@@ -106,16 +106,14 @@ class BatchRunner:
     def get(self, batch_id: str) -> dict:
         key = str(UUID(batch_id))
         with self._lock:
-            if key not in self._batches:
-                raise KeyError("Batch not found")
-            return deepcopy(self._batches[key])
+            if key in self._batches:
+                return deepcopy(self._batches[key])
+        return self._journal.get(key)
 
     def list(self, limit: int = 20) -> list[dict]:
         if type(limit) is not int or not 1 <= limit <= self.MAX_SAVED_BATCHES:
             raise ValueError("Batch limit must be 1-30")
-        with self._lock:
-            keys = list(self._batches)[-limit:][::-1]
-            return [deepcopy(self._batches[key]) for key in keys]
+        return self._journal.list(limit)
 
     def _finish(self, batch_id: str, profile_id: str, status: str, error: object = ""):
         if status not in self.TERMINAL:
@@ -132,18 +130,24 @@ class BatchRunner:
                     break
             self._update_batch_status(batch)
 
-    @staticmethod
-    def _update_batch_status(batch):
+    def _update_batch_status(self, batch):
         statuses = [item["status"] for item in batch["items"]]
-        if not all(status in BatchRunner.TERMINAL for status in statuses):
-            return
-        if all(status == "succeeded" for status in statuses):
+        done = all(status in self.TERMINAL for status in statuses)
+        if done and all(status == "succeeded" for status in statuses):
             batch["status"] = "succeeded"
-        elif batch["cancel_requested"] and all(status in {"succeeded", "cancelled"} for status in statuses):
+        elif done and batch["cancel_requested"] and all(
+            status in {"succeeded", "cancelled"} for status in statuses
+        ):
             batch["status"] = "cancelled"
-        else:
+        elif done:
             batch["status"] = "partial"
-        batch["finished_utc"] = _utc()
+        if done and batch["finished_utc"] is None:
+            batch["finished_utc"] = _utc()
+        self._journal.save(batch)
+        if done:
+            lease = self._leases.pop(batch["id"], None)
+            if lease is not None:
+                lease.__exit__(None, None, None)
 
     def _next(self, batch_id: str):
         with self._lock:
@@ -155,6 +159,8 @@ class BatchRunner:
                         self._update_batch_status(batch)
                         continue
                     item["status"] = "submitting"
+                    # Crash after this point may mean a website action started.
+                    self._journal.save(batch)
                     return item["profile_id"]
             self._update_batch_status(batch)
             return None
@@ -197,6 +203,7 @@ class BatchRunner:
                         if item["status"] == "submitting":
                             item["status"] = "running"
                         break
+                self._journal.save(batch)
                 cancel = self._cancelled[batch_id]
 
             started = time.monotonic()
@@ -224,7 +231,9 @@ class BatchRunner:
         with self._lock:
             batch = self._batches.get(key)
             if batch is None:
-                raise KeyError("Batch not found")
+                raise KeyError("Batch not active in this process")
+            if batch["status"] != "running":
+                return
             batch["cancel_requested"] = True
             self._cancelled[key].set()
             active = [(item["profile_id"], item["run_id"]) for item in batch["items"]
