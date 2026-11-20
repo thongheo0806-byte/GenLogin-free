@@ -21,6 +21,19 @@ class TkinterSmokeTests(unittest.TestCase):
                 self.assertIsNotNone(app.extension_tree)
                 self.assertEqual(len(app.extensions.list()), 0)
                 app.refresh()
+                variable_graph={
+                    "format":"AutumnGenLogin/graph-1",
+                    "nodes":[{"id":"start","type":"start"},
+                             {"id":"define","type":"set_variable","name":"word","value":"hello"},
+                             {"id":"use","type":"action","step":{
+                                 "action":"fill","selector":"#input","text":"{{word}}"}},
+                             {"id":"end","type":"end"}],
+                    "edges":[{"from":"start","to":"define","branch":"next"},
+                             {"from":"define","to":"use","branch":"next"},
+                             {"from":"use","to":"end","branch":"next"}],
+                }
+                app.graph_builder.set_graph(variable_graph)
+                self.assertEqual(app.graph_builder.get_graph(),variable_graph)
             finally:
                 root.destroy()
                 if previous is None:
