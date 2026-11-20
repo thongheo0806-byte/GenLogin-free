@@ -16,6 +16,8 @@ from uuid import UUID, uuid4
 
 from .graph import validate_graph
 from .models import validated_steps
+from .batch_history import BatchJournal
+from .locks import ProfileLease
 
 
 def _utc() -> str:
@@ -43,6 +45,9 @@ class BatchRunner:
         self._lock = threading.RLock()
         self._batches: dict[str, dict] = {}
         self._cancelled: dict[str, threading.Event] = {}
+        self._leases: dict[str, ProfileLease] = {}
+        self._threads: dict[str, list[threading.Thread]] = {}
+        self._journal = BatchJournal(store)
 
     def start(self, profile_ids: list[str], workflow: dict | list, *, max_parallel: int = 3) -> str:
         if not isinstance(profile_ids, list) or not 1 <= len(profile_ids) <= self.MAX_PROFILES:
@@ -59,45 +64,83 @@ class BatchRunner:
         for pid in ids:
             self.store.get(pid)
         ident = str(uuid4())
-        with self._lock:
-            if len(self._batches) >= self.MAX_SAVED_BATCHES:
-                older = [key for key, value in self._batches.items()
-                         if value["status"] in {"succeeded", "partial", "cancelled"}]
-                if not older:
-                    raise RuntimeError("Too many active batches; wait or cancel some")
-                del self._batches[older[0]]
-                self._cancelled.pop(older[0], None)
-            self._batches[ident] = {
-                "id": ident, "created_utc": _utc(), "finished_utc": None,
-                "status": "running", "max_parallel": max_parallel,
-                "cancel_requested": False,
-                "items": [
-                    {"profile_id": pid, "status": "queued", "run_id": None, "error_type": ""}
-                    for pid in ids
-                ],
-            }
-            self._cancelled[ident] = threading.Event()
-        # Browser work always happens off the UI/API threads.
-        for index in range(min(max_parallel, len(ids))):
+        lease = ProfileLease(self.store.base, ident)
+        lease.__enter__()
+        try:
+            with self._lock:
+                self._start_record(ident, ids, max_parallel, lease)
+        except BaseException:
+            lease.__exit__(None, None, None)
+            raise
+        threads = [
             threading.Thread(
                 target=self._worker, args=(ident, deepcopy(validated)),
                 name=f"autumn-batch-{ident[:8]}-{index}", daemon=True,
-            ).start()
+            )
+            for index in range(min(max_parallel, len(ids)))
+        ]
+        with self._lock:
+            self._threads[ident] = threads
+        for thread in threads:
+            thread.start()
         return ident
+
+    def wait(self, batch_id: str, timeout: float = 10.0) -> bool:
+        """Wait for this process's workers to release SQLite handles.
+
+        'succeeded' means browser automation finished, but a worker may still
+        need to close its thread-owned database connection on Windows.
+        """
+        ident = str(UUID(batch_id))
+        if not isinstance(timeout, (int,float)) or isinstance(timeout,bool) or not 0 <= timeout <= 60:
+            raise ValueError("Timeout must be 0-60 seconds")
+        with self._lock:
+            if ident not in self._threads:
+                raise KeyError("Batch is not owned by this process")
+            workers = tuple(self._threads[ident])
+        deadline = time.monotonic() + timeout
+        for worker in workers:
+            if worker is threading.current_thread():
+                continue
+            worker.join(timeout=max(0, deadline - time.monotonic()))
+        return all(not worker.is_alive() for worker in workers)
+
+    def _start_record(self, ident, ids, max_parallel, lease):
+        # Caller holds the runner lock; only completed in-memory records
+        # are evicted. The SQLite audit trail is kept separately.
+        if len(self._batches) >= self.MAX_SAVED_BATCHES:
+            older = [key for key, value in self._batches.items()
+                     if value["status"] in {"succeeded", "partial", "cancelled"}]
+            if not older:
+                raise RuntimeError("Too many active batches; wait or cancel some")
+            del self._batches[older[0]]
+            self._cancelled.pop(older[0], None)
+        batch = {
+            "id": ident, "created_utc": _utc(), "finished_utc": None,
+            "status": "running", "max_parallel": max_parallel,
+            "cancel_requested": False,
+            "items": [
+                {"profile_id": pid, "status": "queued", "run_id": None, "error_type": ""}
+                for pid in ids
+            ],
+        }
+        # Commit the initial state before any worker can open a browser.
+        self._journal.save(batch)
+        self._batches[ident] = batch
+        self._cancelled[ident] = threading.Event()
+        self._leases[ident] = lease
 
     def get(self, batch_id: str) -> dict:
         key = str(UUID(batch_id))
         with self._lock:
-            if key not in self._batches:
-                raise KeyError("Batch not found")
-            return deepcopy(self._batches[key])
+            if key in self._batches:
+                return deepcopy(self._batches[key])
+        return self._journal.get(key)
 
     def list(self, limit: int = 20) -> list[dict]:
         if type(limit) is not int or not 1 <= limit <= self.MAX_SAVED_BATCHES:
             raise ValueError("Batch limit must be 1-30")
-        with self._lock:
-            keys = list(self._batches)[-limit:][::-1]
-            return [deepcopy(self._batches[key]) for key in keys]
+        return self._journal.list(limit)
 
     def _finish(self, batch_id: str, profile_id: str, status: str, error: object = ""):
         if status not in self.TERMINAL:
@@ -114,18 +157,24 @@ class BatchRunner:
                     break
             self._update_batch_status(batch)
 
-    @staticmethod
-    def _update_batch_status(batch):
+    def _update_batch_status(self, batch):
         statuses = [item["status"] for item in batch["items"]]
-        if not all(status in BatchRunner.TERMINAL for status in statuses):
-            return
-        if all(status == "succeeded" for status in statuses):
+        done = all(status in self.TERMINAL for status in statuses)
+        if done and all(status == "succeeded" for status in statuses):
             batch["status"] = "succeeded"
-        elif batch["cancel_requested"] and all(status in {"succeeded", "cancelled"} for status in statuses):
+        elif done and batch["cancel_requested"] and all(
+            status in {"succeeded", "cancelled"} for status in statuses
+        ):
             batch["status"] = "cancelled"
-        else:
+        elif done:
             batch["status"] = "partial"
-        batch["finished_utc"] = _utc()
+        if done and batch["finished_utc"] is None:
+            batch["finished_utc"] = _utc()
+        self._journal.save(batch)
+        if done:
+            lease = self._leases.pop(batch["id"], None)
+            if lease is not None:
+                lease.__exit__(None, None, None)
 
     def _next(self, batch_id: str):
         with self._lock:
@@ -137,6 +186,8 @@ class BatchRunner:
                         self._update_batch_status(batch)
                         continue
                     item["status"] = "submitting"
+                    # Crash after this point may mean a website action started.
+                    self._journal.save(batch)
                     return item["profile_id"]
             self._update_batch_status(batch)
             return None
@@ -152,61 +203,68 @@ class BatchRunner:
             pass
 
     def _worker(self, batch_id: str, workflow: dict | list):
-        while True:
-            pid = self._next(batch_id)
-            if pid is None:
-                return
-            complete = threading.Event()
-            result: dict[str, object] = {}
-            already_open = self.manager.active(pid)
+        try:
+            while True:
+                pid = self._next(batch_id)
+                if pid is None:
+                    return
+                complete = threading.Event()
+                result: dict[str, object] = {}
+                already_open = self.manager.active(pid)
 
-            def on_finish(status: str, error: str | None):
-                result["status"] = status
-                result["error"] = error
-                complete.set()
+                def on_finish(status: str, error: str | None):
+                    result["status"] = status
+                    result["error"] = error
+                    complete.set()
 
-            try:
-                run_id = self.manager.start_workflow(pid, deepcopy(workflow), on_finish=on_finish)
-            except Exception as exc:
-                self._finish(batch_id, pid, "failed", type(exc).__name__)
-                continue
+                try:
+                    run_id = self.manager.start_workflow(pid, deepcopy(workflow), on_finish=on_finish)
+                except Exception as exc:
+                    self._finish(batch_id, pid, "failed", type(exc).__name__)
+                    continue
 
-            with self._lock:
-                batch = self._batches[batch_id]
-                for item in batch["items"]:
-                    if item["profile_id"] == pid:
-                        item["run_id"] = run_id
-                        if item["status"] == "submitting":
-                            item["status"] = "running"
+                with self._lock:
+                    batch = self._batches[batch_id]
+                    for item in batch["items"]:
+                        if item["profile_id"] == pid:
+                            item["run_id"] = run_id
+                            if item["status"] == "submitting":
+                                item["status"] = "running"
+                            break
+                    self._journal.save(batch)
+                    cancel = self._cancelled[batch_id]
+
+                started = time.monotonic()
+                cancellation_sent = False
+                while not complete.wait(0.2):
+                    if cancel.is_set() and not cancellation_sent:
+                        self._cancel_own_run(pid, run_id)
+                        cancellation_sent = True
+                    if time.monotonic()-started >= self.max_runtime_seconds:
+                        self._cancel_own_run(pid, run_id)
+                        self._finish(batch_id, pid, "uncertain", "TimeoutError")
                         break
-                cancel = self._cancelled[batch_id]
-
-            started = time.monotonic()
-            cancellation_sent = False
-            while not complete.wait(0.2):
-                if cancel.is_set() and not cancellation_sent:
-                    self._cancel_own_run(pid, run_id)
-                    cancellation_sent = True
-                if time.monotonic()-started >= self.max_runtime_seconds:
-                    self._cancel_own_run(pid, run_id)
-                    self._finish(batch_id, pid, "uncertain", "TimeoutError")
-                    break
-            if complete.is_set():
-                terminal = str(result.get("status", "uncertain"))
-                self._finish(batch_id, pid, terminal, result.get("error"))
-            if not already_open:
-                # Do not oversubscribe a concurrency slot while auto-close is
-                # still releasing the previous profile's persistent context.
-                deadline = time.monotonic()+15
-                while self.manager.active(pid) and time.monotonic() < deadline:
-                    time.sleep(0.1)
+                if complete.is_set():
+                    terminal = str(result.get("status", "uncertain"))
+                    self._finish(batch_id, pid, terminal, result.get("error"))
+                if not already_open:
+                    # Do not oversubscribe a concurrency slot while auto-close is
+                    # still releasing the previous profile's persistent context.
+                    deadline = time.monotonic()+15
+                    while self.manager.active(pid) and time.monotonic() < deadline:
+                        time.sleep(0.1)
+        finally:
+            # Connections are thread-owned and Windows locks open SQLite files.
+            self.store.close_thread_connection()
 
     def cancel(self, batch_id: str) -> None:
         key = str(UUID(batch_id))
         with self._lock:
             batch = self._batches.get(key)
             if batch is None:
-                raise KeyError("Batch not found")
+                raise KeyError("Batch not active in this process")
+            if batch["status"] != "running":
+                return
             batch["cancel_requested"] = True
             self._cancelled[key].set()
             active = [(item["profile_id"], item["run_id"]) for item in batch["items"]

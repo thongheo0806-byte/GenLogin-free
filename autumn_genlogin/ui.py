@@ -612,7 +612,7 @@ class App:
                   style="Heading.TLabel").pack(anchor="w",pady=(0,8))
         ttk.Label(frame, text="Select a specific Group in Profiles first, then review the workflow in Automation.\n"
                   "Each profile gets an independent run; parallelism is capped to six local browsers.\n"
-                  "This is NOT live click synchronizer; batch results are in memory and are not resumed after restart.",
+                  "This is NOT a live synchronizer. Batch history is saved locally; interrupted runs are never auto-replayed.",
                   style="Muted.TLabel").pack(anchor="w",pady=(0,12))
         controls = ttk.Frame(frame)
         controls.pack(fill="x",pady=(0,10))
@@ -669,8 +669,13 @@ class App:
                                "Cancel queued runs and request cancellation of active runs?\n"
                                "A browser action already submitted to a website may still complete.",
                                parent=self.root):
-            self.batches.cancel(selection[0])
-            self.refresh_batches()
+            try:
+                self.batches.cancel(selection[0])
+                self.refresh_batches()
+            except KeyError:
+                messagebox.showinfo("Batch history",
+                    "This batch is no longer active in this app. Historical runs cannot be cancelled.",
+                    parent=self.root)
 
     def refresh_batches(self):
         self.batch_tree.delete(*self.batch_tree.get_children())

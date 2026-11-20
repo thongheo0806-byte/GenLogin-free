@@ -182,6 +182,17 @@ class Store:
                     exists = c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='profile_extensions'").fetchone()
                     if exists:
                         c.execute("DELETE FROM profile_extensions WHERE profile_id = ?", (profile_id,))
+                    has_batches = c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='batch_history'").fetchone()
+                    if has_batches:
+                        for batch_row in c.execute("SELECT id,snapshot_json FROM batch_history").fetchall():
+                            snapshot = json.loads(batch_row["snapshot_json"])
+                            if any(item.get("profile_id") == profile_id
+                                   for item in snapshot.get("items",[])):
+                                # Queued profiles may not have acquired a browser
+                                # lease yet. Protect these from concurrent delete.
+                                if snapshot["status"] == "running":
+                                    raise ProfileBusyError("Stop active batch automation before deleting this profile")
+                                c.execute("DELETE FROM batch_history WHERE id=?",(batch_row["id"],))
                     has_history = c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='schedule_runs'").fetchone()
                     if has_history:
                         c.execute("DELETE FROM schedule_runs WHERE profile_id=?", (profile_id,))

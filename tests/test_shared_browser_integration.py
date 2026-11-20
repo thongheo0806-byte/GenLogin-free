@@ -152,6 +152,13 @@ class SharedBrowserRealTests(unittest.TestCase):
         self.assertEqual([i["profile_id"] for i in report["items"]],ids)
         self.assertEqual({i["status"] for i in report["items"]},{"succeeded"})
         self.assertNotIn("Autumn test",str(report))
+        # Actual browser completions, not the initial "submitted" state,
+        # must survive construction of a new BatchRunner after completion.
+        from autumn_genlogin.batch_history import BatchJournal
+        imported = BatchJournal(Store(Path(self.tmp.name))).get(batch_id)
+        self.assertEqual(imported["status"],"succeeded")
+        self.assertEqual({i["status"] for i in imported["items"]},{"succeeded"})
+        self.assertNotIn("Autumn test",str(imported))
         self.assertTrue(eventually(lambda:all(not self.manager.active(pid) for pid in ids),timeout=20))
 
     def test_cancel_interrupts_inflight_selector_wait_without_closing_profile(self):

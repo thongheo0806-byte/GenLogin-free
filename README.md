@@ -32,7 +32,7 @@
 - Create, edit, clone, group, tag, search, import and export browser profile **metadata**.
 - Launch independent Chrome/Edge/Playwright Chromium sessions with distinct persistent `user_data_dir` folders (cookies, history and sessions isolated by directory).
 - Set locale, IANA timezone, viewport, optional user agent, start URL, and per-profile HTTP proxy (optional authentication) or SOCKS5 proxy (**no username/password authentication** in Chromium). Proxy passwords are stored via the OS credential vault (`keyring`), not in SQLite or export JSON.
-- Run up to six browser sessions at once, with a shared asynchronous Playwright driver. Bulk-open one selected group from the desktop UI.
+- Run up to six browser sessions at once through a shared Playwright driver; batch-run a validated workflow across a selected group with bounded concurrency. Batch results are saved locally in SQLite with safe crash recovery and no automatic action replay.
 - Build and run a JSON workflow without executing untrusted code: `goto`, `click`, `fill`, `press`, `check`, `uncheck`, `select_option`, `scroll_into_view`, `wait`, `wait_for`, `extract_text`, `screenshot`. Cancel between steps.
 - Save screenshots in a per-profile local directory.
 - Opt-in, loopback-only HTTP API with a fresh bearer token per startup. **Off by default**.
@@ -162,3 +162,9 @@ See [audit remediation report](docs/AUDIT_2026-11-19.md) for exact regression te
 - `extract_text` results are held in memory for at most 15 minutes, wiped when browser sessions stop, and removed with the profile. Automated extraction must be intentionally requested by a workflow step.
 - Unsupported proxy hostnames, reused credentials from changed usernames and profile engine switches with attached extensions are rejected or cleaned up proactively. API responds with HTTP 503 when local storage is unavailable.
 - Windows CI has an explicit existing-venv upgrade lane; browser compatibility tests remain a separate, actual-Chromium lane. **No EXE is built.** Passing tests does not establish GenLogin/Titan parity.
+
+## Batch task history (development)
+
+Batch Tasks executes one validated workflow on the selected group of profiles, up to six concurrently, recording per-profile results. Restarting the application restores the recent status history but **does not restart unfinished workflows**. If a browser action was in progress during a crash, the result will be `uncertain`. Check the website yourself before deciding whether to repeat that task. Queued tasks are marked cancelled after an interrupted process.
+
+The SQLite journal stores IDs, statuses, times, and safe error *types*, never cookies, extracted page content, workflow text or passwords. Up to 100 finished batches are retained. Deleting a profile also purges any finished batch history that references it. History does not imply that web transactions are reversible or executed exactly once.
