@@ -14,7 +14,7 @@ import time
 from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import datetime
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from .engines import browser_options
 from .extensions import ExtensionLibrary
@@ -137,6 +137,10 @@ class SharedBrowserManager:
             # Drain subprocess/pipe callbacks before closing the Proactor loop.
             try: loop.run_until_complete(asyncio.sleep(0.4))
             except Exception: pass
+            try:
+                self.store.close_thread_connection()
+            except Exception:
+                pass
             loop.close()
 
     def _submit(self,coro):
@@ -265,40 +269,50 @@ class SharedBrowserManager:
             if self._thread.is_alive():
                 raise RuntimeError("Shared Playwright driver did not shut down")
 
-    def run_steps(self,pid:str,steps:object):
-        self._enqueue(pid,validated_steps(steps),"steps")
+    def run_steps(self,pid:str,steps:object,*,run_id=None,on_finish=None):
+        return self._enqueue(pid,validated_steps(steps),"steps",run_id=run_id,on_finish=on_finish)
 
-    def run_graph(self,pid:str,graph:object):
-        self._enqueue(pid,validate_graph(graph),"graph")
+    def run_graph(self,pid:str,graph:object,*,run_id=None,on_finish=None):
+        return self._enqueue(pid,validate_graph(graph),"graph",run_id=run_id,on_finish=on_finish)
 
-    def start_workflow(self,pid:str,workflow:object):
+    def start_workflow(self,pid:str,workflow:object,*,run_id=None,on_finish=None):
         opened=False
         if not self.active(pid):
             self.start(pid);opened=True
         with self._lock:
             session=self._sessions[pid]
             if opened:session.auto_close=True
-        if isinstance(workflow,list):self.run_steps(pid,workflow)
-        else:self.run_graph(pid,workflow)
+        try:
+            if isinstance(workflow,list):
+                return self.run_steps(pid,workflow,run_id=run_id,on_finish=on_finish)
+            return self.run_graph(pid,workflow,run_id=run_id,on_finish=on_finish)
+        except BaseException:
+            if opened:
+                self.stop(pid)
+            raise
 
-    def _enqueue(self,pid,payload,kind):
+    def _enqueue(self,pid,payload,kind,*,run_id=None,on_finish=None):
+        ident = str(UUID(run_id)) if run_id is not None else str(uuid4())
         with self._lock:
             session=self._sessions.get(pid)
             if not session: raise ValueError("Open the profile first")
             if pid in self._active: raise ValueError("Automation already running")
             self._active.add(pid)
             session.cancel.clear()
-            self._runs[pid]={"id":str(uuid4()),"status":"queued","total_steps":len(payload),
+            self._runs[pid]={"id":ident,"status":"queued","total_steps":len(payload),
                              "extracted":[],"error":None}
             self._run_timestamps[pid]=time.monotonic()
         try:
-            fut=self._submit(self._perform(session,payload,kind))
-        except Exception:
-            with self._lock:self._active.discard(pid)
+            self._submit(self._perform(session,payload,kind,on_finish=on_finish))
+        except BaseException:
+            with self._lock:
+                self._active.discard(pid)
+                self._runs.pop(pid,None)
+                self._run_timestamps.pop(pid,None)
             raise
-        # Task identity is tracked inside _perform rather than on this future.
+        return ident
 
-    async def _perform(self,session,payload,kind):
+    async def _perform(self,session,payload,kind,*,on_finish=None):
         pid=session.profile.id
         task=asyncio.current_task()
         session.automation=task
@@ -325,7 +339,18 @@ class SharedBrowserManager:
             self._run_status(pid,"failed",self._error(exc,""))
             self.events.put((pid,"error",self._error(exc,"")))
         finally:
-            with self._lock:self._active.discard(pid)
+            with self._lock:
+                self._active.discard(pid)
+                record = self._runs.get(pid)
+                terminal_status = record["status"] if record else "failed"
+                # Only the exception type is stored by the scheduler's durable
+                # journal. Never persist browser page content or extracted text.
+                error = record["error"] if record else None
+            if on_finish is not None:
+                try:
+                    on_finish(terminal_status, error)
+                except Exception:
+                    self.events.put((pid,"error","Unable to persist scheduled run outcome"))
             self.events.put((pid,"log","Workflow finished"))
             if session.auto_close:
                 await self._stop_session(session)

@@ -9,6 +9,7 @@ import json
 import sqlite3
 import threading
 from dataclasses import dataclass
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Callable
 from uuid import UUID, uuid4
@@ -37,6 +38,18 @@ class Job:
     enabled: bool
     last_status: str
     last_error: str
+    dispatch_id: str | None = None
+
+
+@dataclass(frozen=True)
+class RunRecord:
+    id: str
+    job_id: str
+    profile_id: str
+    started_utc: str
+    finished_utc: str | None
+    status: str
+    error_type: str
 
 
 class ScheduleStore:
@@ -51,6 +64,17 @@ class ScheduleStore:
                 last_error TEXT NOT NULL DEFAULT ''
             )""")
             c.execute("CREATE INDEX IF NOT EXISTS schedules_due_idx ON schedules(enabled,next_run_utc)")
+            c.execute("""CREATE TABLE IF NOT EXISTS schedule_runs (
+                id TEXT PRIMARY KEY,
+                job_id TEXT NOT NULL,
+                profile_id TEXT NOT NULL,
+                started_utc TEXT NOT NULL,
+                finished_utc TEXT,
+                status TEXT NOT NULL,
+                error_type TEXT NOT NULL DEFAULT ''
+            )""")
+            c.execute("CREATE INDEX IF NOT EXISTS schedule_runs_job_idx ON schedule_runs(job_id)")
+            c.execute("CREATE INDEX IF NOT EXISTS schedule_runs_profile_idx ON schedule_runs(profile_id)")
 
     @staticmethod
     def _check_workflow(workflow):
@@ -78,8 +102,21 @@ class ScheduleStore:
                     last_status=r["last_status"],last_error=r["last_error"]) for r in rows]
 
     def remove(self, job_id: str) -> None:
+        jid = str(UUID(job_id))
         with self.store._connect() as c:
-            c.execute("DELETE FROM schedules WHERE id=?", (str(UUID(job_id)),))
+            c.execute("DELETE FROM schedule_runs WHERE job_id=?", (jid,))
+            c.execute("DELETE FROM schedules WHERE id=?", (jid,))
+
+    def history(self, job_id: str | None = None, limit: int = 50) -> list[RunRecord]:
+        if type(limit) is not int or not 1 <= limit <= 200:
+            raise ValueError("History limit must be 1-200")
+        with self.store._connect() as c:
+            if job_id is not None:
+                rows = c.execute("SELECT * FROM schedule_runs WHERE job_id=? ORDER BY rowid DESC LIMIT ?",
+                                 (str(UUID(job_id)), limit)).fetchall()
+            else:
+                rows = c.execute("SELECT * FROM schedule_runs ORDER BY rowid DESC LIMIT ?",(limit,)).fetchall()
+        return [RunRecord(**dict(row)) for row in rows]
 
     def claim_due(self, now: datetime | None = None, limit: int = 5) -> list[Job]:
         """Claim exactly once on this local database, even from multiple schedulers."""
@@ -102,25 +139,78 @@ class ScheduleStore:
                               (next_time,r["id"]))
                 else:
                     c.execute("UPDATE schedules SET enabled=0,last_status='dispatch_pending',last_error='' WHERE id=?",(r["id"],))
+                dispatch_id = str(uuid4())
+                c.execute("INSERT INTO schedule_runs(id,job_id,profile_id,started_utc,status) VALUES(?,?,?,?,?)",
+                          (dispatch_id,r["id"],r["profile_id"],now_s,"dispatch_pending"))
                 claimed.append(Job(id=r["id"],profile_id=r["profile_id"],workflow=json.loads(r["workflow_json"]),
                                    next_run_utc=r["next_run_utc"],interval_seconds=interval,
-                                   enabled=bool(interval),last_status="dispatch_pending",last_error=""))
+                                   enabled=bool(interval),last_status="dispatch_pending",last_error="",
+                                   dispatch_id=dispatch_id))
         return claimed
 
-    def record_dispatched(self, job_id: str) -> None:
-        """The browser manager accepted the job; execution may still fail.
+    @staticmethod
+    def _safe_error(error: str) -> str:
+        """Store exception *type* only; browser errors can expose page secrets."""
+        name = str(error).partition(":")[0]
+        return name[:80] if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.]{0,79}", name) else "AutomationError"
 
-        This is intentionally *not* a 'succeeded' state. If the process dies
-        between claim and acknowledgement, 'dispatch_pending' remains visible.
-        An uncertain task must not be silently replayed.
+    @staticmethod
+    def _is_latest(conn, job_id: str, dispatch_id: str) -> bool:
+        row = conn.execute("SELECT id FROM schedule_runs WHERE job_id=? ORDER BY rowid DESC LIMIT 1",
+                           (job_id,)).fetchone()
+        return bool(row and row["id"] == dispatch_id)
+
+    def record_dispatched(self, job_id: str, dispatch_id: str | None = None) -> None:
+        """Accepted by browser manager != browser execution completed.
+
+        Completion may race with this acknowledgement. Never overwrite a
+        terminal run result with 'submitted'.
         """
         with self.store._connect() as c:
+            if dispatch_id is not None:
+                c.execute("UPDATE schedule_runs SET status='submitted' "
+                          "WHERE id=? AND job_id=? AND status='dispatch_pending'",(dispatch_id,job_id))
+                if not self._is_latest(c,job_id,dispatch_id):
+                    return
+                row = c.execute("SELECT status FROM schedule_runs WHERE id=?", (dispatch_id,)).fetchone()
+                if row and row["status"] != "submitted":
+                    return
             c.execute("UPDATE schedules SET last_status='submitted',last_error='' "
                       "WHERE id=? AND last_status='dispatch_pending'", (job_id,))
 
-    def record_error(self, job_id: str, error: str) -> None:
+    def record_error(self, job_id: str, error: str, dispatch_id: str | None = None) -> None:
+        """Failed browser submission; do not automatically replay side effects."""
+        kind = self._safe_error(error)
         with self.store._connect() as c:
-            c.execute("UPDATE schedules SET last_status='error',last_error=? WHERE id=?", (error[:400],job_id))
+            if dispatch_id is None:
+                latest = c.execute("SELECT id FROM schedule_runs WHERE job_id=? ORDER BY rowid DESC LIMIT 1",
+                                   (job_id,)).fetchone()
+                dispatch_id = latest["id"] if latest else None
+            if dispatch_id:
+                c.execute("UPDATE schedule_runs SET status='failed',finished_utc=?,error_type=? "
+                          "WHERE id=? AND status IN ('dispatch_pending','submitted')",
+                          (iso(utcnow()),kind,dispatch_id))
+                if not self._is_latest(c,job_id,dispatch_id):
+                    return
+            c.execute("UPDATE schedules SET last_status='error',last_error=? WHERE id=?",
+                      (kind,job_id))
+
+    def record_completion(self, dispatch_id: str, status: str, error: str | None = None) -> None:
+        """Terminal status from actual BrowserManager execution, not dispatch."""
+        if status not in {"succeeded","failed","cancelled"}:
+            raise ValueError("Nonterminal browser run status")
+        kind = self._safe_error(error) if error else ""
+        with self.store._connect() as c:
+            c.execute("BEGIN IMMEDIATE")
+            row = c.execute("SELECT job_id,status FROM schedule_runs WHERE id=?", (str(UUID(dispatch_id)),)).fetchone()
+            if not row or row["status"] not in {"submitted","dispatch_pending"}:
+                return
+            c.execute("UPDATE schedule_runs SET status=?,error_type=?,finished_utc=? WHERE id=?",
+                      (status,kind,iso(utcnow()),dispatch_id))
+            if self._is_latest(c,row["job_id"],dispatch_id):
+                c.execute("UPDATE schedules SET last_status=?,last_error=? WHERE id=?",
+                          (status,kind,row["job_id"]))
+
 
     def retry_one_shot(self, job_id: str, now: datetime | None = None) -> None:
         """Re-arm failed/uncertain one-shots only after user confirmation.
@@ -143,9 +233,11 @@ class ScheduleStore:
 
 
 class Scheduler:
-    def __init__(self, store: ScheduleStore, dispatch: Callable[[str, dict | list], None], *, interval=1.0):
+    def __init__(self, store: ScheduleStore, dispatch: Callable[[str, dict | list], None],
+                 *, interval=1.0, dispatch_job: Callable[[Job], None] | None = None):
         self.store = store
         self.dispatch = dispatch
+        self.dispatch_job = dispatch_job
         self.interval = interval
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -167,13 +259,16 @@ class Scheduler:
                 try:
                     for job in self.store.claim_due():
                         try:
-                            self.dispatch(job.profile_id, job.workflow)
+                            if self.dispatch_job is not None:
+                                self.dispatch_job(job)
+                            else:
+                                self.dispatch(job.profile_id, job.workflow)
                         except Exception as exc:
-                            # An error in browser submission is recorded. Do not
-                            # auto-retry: the callback may have started the job.
-                            self.store.record_error(job.id, f"{type(exc).__name__}: {exc}")
+                            # Even unexpected callback errors must not kill the
+                            # scheduler thread or automatically replay a job.
+                            self.store.record_error(job.id, type(exc).__name__, job.dispatch_id)
                         else:
-                            self.store.record_dispatched(job.id)
+                            self.store.record_dispatched(job.id, job.dispatch_id)
                 except sqlite3.Error:
                     # A locked or temporarily unavailable database must not kill
                     # the scheduler thread; the GUI diagnostics remains available.

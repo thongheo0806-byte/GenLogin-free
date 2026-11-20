@@ -93,6 +93,47 @@ class SharedBrowserRealTests(unittest.TestCase):
         self.assertTrue(eventually(lambda:not self.manager.active(profiles[0].id)))
         self.assertTrue(self.manager.active(profiles[1].id))
 
+    def test_scheduled_run_records_real_browser_execution(self):
+        """Real browser automation acknowledges completion through the journal."""
+        from datetime import datetime, timedelta, timezone
+        from autumn_genlogin.scheduler import ScheduleStore, Scheduler
+
+        profile = self.store.save(Profile(name="scheduled", browser="chromium",start_url=self.origin))
+        schedules = ScheduleStore(self.store)
+        job_id = schedules.add(profile.id,
+            [{"action":"wait_for","selector":"#title"},{"action":"extract_text","selector":"#title"}],
+            datetime.now(timezone.utc)-timedelta(minutes=1))
+
+        def dispatch_job(job):
+            self.manager.start_workflow(
+                job.profile_id, job.workflow, run_id=job.dispatch_id,
+                on_finish=lambda status,error,ident=job.dispatch_id:
+                    schedules.record_completion(ident,status,error))
+
+        scheduler = Scheduler(schedules,self.manager.start_workflow,
+                              dispatch_job=dispatch_job,interval=0.05)
+        scheduler.start()
+        try:
+            self.assertTrue(eventually(lambda:
+                bool(schedules.history(job_id)) and
+                schedules.history(job_id)[0].status in ("succeeded","failed","cancelled"),timeout=40))
+        finally:
+            scheduler.stop()
+
+        record = schedules.history(job_id)[0]
+        self.assertEqual(record.status,"succeeded",record.error_type)
+        self.assertIsNotNone(record.finished_utc)
+        self.assertEqual(schedules.list()[0].last_status,"succeeded")
+        # Extracted text must not be written to SQLite.
+        import sqlite3
+        from contextlib import closing
+        # sqlite3.Connection.__exit__ commits but does not close its Windows
+        # file handle. Explicit closing is required before tempdir teardown.
+        with closing(sqlite3.connect(self.store.db)) as conn:
+            raw = str(conn.execute("SELECT * FROM schedule_runs").fetchall())
+        self.assertNotIn("Autumn test",raw)
+        self.assertTrue(eventually(lambda:not self.manager.active(profile.id),timeout=20))
+
     def test_user_closes_last_page_and_recorder_redacts_text(self):
         profile=self.store.save(Profile(name="recorder",browser="chromium",start_url=self.origin))
         self.manager.start(profile.id)

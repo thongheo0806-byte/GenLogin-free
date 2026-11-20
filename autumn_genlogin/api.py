@@ -7,7 +7,7 @@ import json
 import secrets
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse
+from urllib.parse import urlparse, parse_qs
 
 
 class LocalAPI:
@@ -53,6 +53,8 @@ class LocalAPI:
                     self._do_get_authorized()
                 except (sqlite3.Error, OSError):
                     self._json(503, {"error": "Local storage unavailable; run Diagnostics"})
+                except (ValueError, TypeError):
+                    self._json(400, {"error": "Invalid request parameters"})
 
             def _do_get_authorized(self):
                 path = urlparse(self.path).path
@@ -69,6 +71,15 @@ class LocalAPI:
                          "next_run_utc":job.next_run_utc,"interval_seconds":job.interval_seconds,
                          "enabled":job.enabled,"last_status":job.last_status,"last_error":job.last_error}
                         for job in controller.schedules.list()]})
+                elif path == "/v1/schedules/history" and controller.schedules is not None:
+                    params = parse_qs(urlparse(self.path).query)
+                    limit = int(params.get("limit",["50"])[0])
+                    schedule_id = params.get("schedule_id",[None])[0]
+                    self._json(200, {"runs": [
+                        {"id":run.id,"job_id":run.job_id,"profile_id":run.profile_id,
+                         "started_utc":run.started_utc,"finished_utc":run.finished_utc,
+                         "status":run.status,"error_type":run.error_type}
+                        for run in controller.schedules.history(schedule_id,limit)]})
                 elif len(path.strip("/").split("/")) == 4 and path.endswith("/recording"):
                     parts = path.strip("/").split("/")
                     if parts[:2] != ["v1", "profiles"]:

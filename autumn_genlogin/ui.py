@@ -123,7 +123,8 @@ class App:
         self.store = Store(reuse_connections=True)
         self.manager = SharedBrowserManager(self.store)
         self.schedule_store = ScheduleStore(self.store)
-        self.scheduler = Scheduler(self.schedule_store, self.manager.start_workflow)
+        self.scheduler = Scheduler(self.schedule_store, self.manager.start_workflow,
+                                   dispatch_job=self._dispatch_scheduled_job)
         self.scheduler.start()
         self.cloud = None
         self.cloud_revision = {"profiles": 0, "workflows": 0}
@@ -525,6 +526,14 @@ class App:
         except (TypeError, ValueError) as exc:
             messagebox.showerror("Recorder", str(exc), parent=self.root)
 
+    def _dispatch_scheduled_job(self, job):
+        """Attach an exactly-once terminal callback to each scheduled run."""
+        self.manager.start_workflow(
+            job.profile_id, job.workflow, run_id=job.dispatch_id,
+            on_finish=lambda status, error, ident=job.dispatch_id:
+                self.schedule_store.record_completion(ident, status, error),
+        )
+
     def _build_schedule_tab(self, frame):
         ttk.Label(frame, text="Durable local schedules (UTC storage; local clock entry)", style="Heading.TLabel").pack(anchor="w", pady=8)
         box = ttk.Frame(frame)
@@ -544,6 +553,16 @@ class App:
             self.schedule_tree.heading(column, text=column.title())
             self.schedule_tree.column(column, width=250 if column == "profile" else 170)
         self.schedule_tree.pack(fill="both", expand=True)
+        ttk.Label(frame, text="Recent scheduled runs (no page content or extracted values stored)",
+                  style="Heading.TLabel").pack(anchor="w", pady=(12, 4))
+        self.schedule_history_tree = ttk.Treeview(
+            frame, columns=("job","profile","started","finished","status","error"),
+            show="headings", height=7)
+        for column, width in (("job",88),("profile",88),("started",190),
+                              ("finished",190),("status",130),("error",145)):
+            self.schedule_history_tree.heading(column, text=column.title())
+            self.schedule_history_tree.column(column, width=width, anchor="w")
+        self.schedule_history_tree.pack(fill="x")
         ttk.Label(frame, text="Tasks run only while AutumnGenLogin is open. Submitted means accepted, not finished.\n"
                   "Dispatch pending means execution is uncertain; never automatically replay a one-time job.",
                   style="Muted.TLabel").pack(anchor="w", pady=8)
@@ -554,6 +573,11 @@ class App:
         for job in self.schedule_store.list():
             self.schedule_tree.insert("", "end", iid=job.id,
                 values=(job.profile_id[:8],job.next_run_utc, job.interval_seconds or "once",job.last_status))
+        self.schedule_history_tree.delete(*self.schedule_history_tree.get_children())
+        for run in self.schedule_store.history(limit=50):
+            self.schedule_history_tree.insert("", "end", iid=run.id,
+                values=(run.job_id[:8],run.profile_id[:8],run.started_utc,
+                        run.finished_utc or "",run.status,run.error_type))
 
     def schedule_workflow(self):
         pid = self.selected_id()
