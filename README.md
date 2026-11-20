@@ -4,8 +4,15 @@
 
 **Free, local-first browser profile studio for Windows**. This is an independent open-source implementation inspired by the *category* of browser profile managers. **Not affiliated with GenLogin; not a clone of its proprietary browser engine.**
 
-**Project status: v0.5.0-dev (2026-11-19), incomplete feature parity.** This development branch includes a draggable node graph, recorder, opt-in encrypted team metadata hub, durable local scheduler, five engine adapters, shared Playwright driver and Windows regression tests. The release build is disabled; a passing test is not an approval to ship.
+**Project status: v0.5 development baseline, updated 2026-11-20; incomplete feature parity.** This development branch includes a draggable node graph, recorder, opt-in encrypted team metadata hub, durable local scheduler, five engine adapters, shared Playwright driver and Windows regression tests. The release build is disabled; a passing test is not an approval to ship.
 
+
+## 2026-11-20 development milestones (still NO EXE release)
+
+- **Encrypted offline profile backups:** backup a *stopped* profile including sensitive browser-session files into an AES-GCM encrypted `.aglb` archive; restore as a **new** profile. User-owned passphrase is required and not recoverable. OS vault passwords, proxy credentials and extension packages are excluded. Limited to 1 GiB of browser data / 12,000 files. Only use on trusted storage.
+- **Offline MV3 extension update and rollback:** import a reviewed ZIP as a new immutable package; compare permission increases before confirming migration of stopped Chromium profiles. A prior package is retained for explicit rollback. This is not signed-publisher or Web Store verification.
+- **Scheduler results and batch tasks:** terminal run journal, local bearer-authenticated schedule history, bounded multi-profile group batches (1-6 concurrent), and cancellation of in-flight Playwright waits.
+- **Python local API client SDK:** safe typed client for the existing `/v1` API, with redirect/proxy refusal, strict loopback URLs and typed HTTP errors. See [API SDK](docs/API_SDK.md). **Not GenLogin API compatible.**
 
 ## v0.5-dev functional expansion (source only)
 
