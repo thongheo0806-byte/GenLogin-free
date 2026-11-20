@@ -140,7 +140,10 @@ class LocalAPI:
                         self._json(202, {"accepted":True,"batch_id":ident})
                         return
                     if controller.batches is not None and len(parts)==4 and parts[:2]==["v1","batches"] and parts[3]=="cancel":
-                        controller.batches.cancel(parts[2])
+                        try:
+                            controller.batches.cancel(parts[2])
+                        except KeyError:
+                            return self._json(404, {"error":"Batch is not active in this application"})
                         self._json(202, {"accepted":True})
                         return
                     if len(parts) != 4 or parts[:2] != ["v1", "profiles"]:
