@@ -15,7 +15,7 @@ The [official public release notes](https://genlogin.com/release-notes) currentl
 | Sequential automation | [Automation](https://genlogin.com/automation) | Typed JSON actions, results and local API | Advanced actions, error recovery, SDK |
 | Visual graph automation | [Automation](https://genlogin.com/automation) | Bounded condition/repeat/action graph, Tk editor | Full node catalog, variables, parallel branches, UI usability |
 | Recorder | [Automation](https://genlogin.com/automation) | Capture click/select/form selectors with private values redacted | Complex action replay and multi-page tests |
-| Scheduler | [Automation](https://genlogin.com/automation) | Durable SQLite one-shot and interval dispatch while app is open; manual retry under development | Execution completion, crash recovery and durable run history |
+| Scheduler | [Automation](https://genlogin.com/automation) | SQLite one-shot/interval scheduler, manual retry, per-run journal, terminal callback from real BrowserManager, authenticated run history API and GUI | Windows end-to-end, long-running resilience, external-process crash recovery and complete workflow traces; active app required |
 | Image click, video, AI, synchronizer, miniapps | [Automation](https://genlogin.com/automation) | **Not implemented** | Complete independent features and tests |
 | Full cloud browser-session sync | [Local/cloud profiles](https://docs.genlogin.com/group-profiles/local-and-cloud-profiles) | **Not implemented** | Secure session transfer, conflicts, rollback |
 | Optional team metadata sync | [Sharing](https://docs.genlogin.com/group-profiles/share-profile) | Encrypted metadata/workflows, loopback RBAC and revisions; redirect bearer-token fix | Production HTTPS, disaster recovery, wider security tests |
@@ -30,3 +30,13 @@ The [official public release notes](https://genlogin.com/release-notes) currentl
 - Public GenLogin marketing/documentation describes scope, not specific installed binary behavior. Native Titan parity remains unverified.
 
 **Release status: HOLD EXE BUILD.** See RELEASE_GATES.md and TITAN_VERIFICATION_PROTOCOL.md. Do not publish an EXE simply because unit tests are green.
+
+## Scheduled run journal development note (not release acceptance)
+
+- A separate SQLite `schedule_runs` table holds dispatch UUID, profile/job IDs, timestamps, terminal state and **exception class only**. It never intentionally writes extracted text, screenshots, workflow payloads, cookies or raw error messages.
+- Claims and journal entries are created atomically. A `dispatch_pending` record after a crash is **uncertain**, not proof the action never started; never replay automatically.
+- BrowserManager callback updates `succeeded`, `failed` or `cancelled` after the workflow ends, rather than inferring completion from the scheduler callback's return.
+- Completion can race with `submitted` acknowledgement; the journal never downgrades a terminal result. For overlapping interval runs, only the newest dispatch may update a schedule's overall status.
+- The GUI Scheduler tab shows recent executions. Opt-in local API GET `/v1/schedules/history?limit=50` is bearer-token protected; optional `schedule_id` filters a job; limit is 1-200.
+- Deleting a profile or a schedule removes its journal entries. Old v0.5 SQLite profile data remains valid, and the new table is created without altering the profile schema.
+- A Windows Chromium end-to-end test is required for acceptance of actual completion. This is an incremental architecture improvement, not GenLogin/Titan parity.
