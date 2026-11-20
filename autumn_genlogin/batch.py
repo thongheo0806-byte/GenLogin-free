@@ -46,6 +46,7 @@ class BatchRunner:
         self._batches: dict[str, dict] = {}
         self._cancelled: dict[str, threading.Event] = {}
         self._leases: dict[str, ProfileLease] = {}
+        self._threads: dict[str, list[threading.Thread]] = {}
         self._journal = BatchJournal(store)
 
     def start(self, profile_ids: list[str], workflow: dict | list, *, max_parallel: int = 3) -> str:
@@ -71,12 +72,38 @@ class BatchRunner:
         except BaseException:
             lease.__exit__(None, None, None)
             raise
-        for index in range(min(max_parallel, len(ids))):
+        threads = [
             threading.Thread(
                 target=self._worker, args=(ident, deepcopy(validated)),
                 name=f"autumn-batch-{ident[:8]}-{index}", daemon=True,
-            ).start()
+            )
+            for index in range(min(max_parallel, len(ids)))
+        ]
+        with self._lock:
+            self._threads[ident] = threads
+        for thread in threads:
+            thread.start()
         return ident
+
+    def wait(self, batch_id: str, timeout: float = 10.0) -> bool:
+        """Wait for this process's workers to release SQLite handles.
+
+        'succeeded' means browser automation finished, but a worker may still
+        need to close its thread-owned database connection on Windows.
+        """
+        ident = str(UUID(batch_id))
+        if not isinstance(timeout, (int,float)) or isinstance(timeout,bool) or not 0 <= timeout <= 60:
+            raise ValueError("Timeout must be 0-60 seconds")
+        with self._lock:
+            if ident not in self._threads:
+                raise KeyError("Batch is not owned by this process")
+            workers = tuple(self._threads[ident])
+        deadline = time.monotonic() + timeout
+        for worker in workers:
+            if worker is threading.current_thread():
+                continue
+            worker.join(timeout=max(0, deadline - time.monotonic()))
+        return all(not worker.is_alive() for worker in workers)
 
     def _start_record(self, ident, ids, max_parallel, lease):
         # Caller holds the runner lock; only completed in-memory records
