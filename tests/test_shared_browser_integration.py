@@ -126,7 +126,10 @@ class SharedBrowserRealTests(unittest.TestCase):
         self.assertEqual(schedules.list()[0].last_status,"succeeded")
         # Extracted text must not be written to SQLite.
         import sqlite3
-        with sqlite3.connect(self.store.db) as conn:
+        from contextlib import closing
+        # sqlite3.Connection.__exit__ commits but does not close its Windows
+        # file handle. Explicit closing is required before tempdir teardown.
+        with closing(sqlite3.connect(self.store.db)) as conn:
             raw = str(conn.execute("SELECT * FROM schedule_runs").fetchall())
         self.assertNotIn("Autumn test",raw)
         self.assertTrue(eventually(lambda:not self.manager.active(profile.id),timeout=20))
