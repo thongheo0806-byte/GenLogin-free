@@ -14,6 +14,7 @@ from .models import validated_steps
 FIELDS = {
     "goto": ("url",),
     "click": ("selector",),
+    "click_image": ("template_id", "confidence"),
     "fill": ("selector", "text"),
     "wait": ("seconds",),
     "wait_for": ("selector",),
@@ -25,7 +26,7 @@ FIELDS = {
     "select_option": ("selector", "value"),
     "scroll_into_view": ("selector",),
 }
-DEFAULTS = {"url": "https://example.com", "selector": "h1", "text": "example", "seconds": "1", "key": "Enter", "value": "value"}
+DEFAULTS = {"url": "https://example.com", "selector": "h1", "text": "example", "seconds": "1", "confidence": "0.94", "template_id": "", "key": "Enter", "value": "value"}
 
 
 class StepDialog(tk.Toplevel):
@@ -72,7 +73,7 @@ class StepDialog(tk.Toplevel):
     def save(self):
         entry = {"action": self.action.get()}
         try:
-            entry.update({k: float(v.get()) if k == "seconds" else v.get() for k, v in self.inputs.items()})
+            entry.update({k: float(v.get()) if k in {"seconds", "confidence"} else v.get() for k, v in self.inputs.items()})
             validated_steps([entry])
         except (ValueError, TypeError) as exc:
             messagebox.showerror("Invalid step", str(exc), parent=self)
