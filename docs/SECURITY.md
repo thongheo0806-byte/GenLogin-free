@@ -48,3 +48,12 @@
 - The regression uses two synthetic local HTTP servers, an authenticated client and HTTP status codes 301/302/303/307/308. The redirected receiver must get **no requests**, not merely a masked credential.
 - Configure reverse proxies to serve the hub API without redirects. A legitimate URL migration requires changing the cloud server URL explicitly and logging in again. HTTPS remains mandatory for non-loopback connections.
 - This patch prevents this specific credential-forwarding path; it is **not** a complete cloud security audit or a production deployment approval.
+
+## 2026-11-20 encrypted local profile backup (development)
+
+- The opt-in `.aglb` format encrypts streaming TAR content with AES-256-GCM. The passphrase is processed locally using scrypt with a fresh random salt and nonce. No unencrypted intermediate archive is written to disk during export.
+- Backups **contain session data, browser cookies and local storage**. Anyone with the passphrase and backup has access to these sensitive bytes. Store both securely and never upload them unintentionally. This is not a portable account identity or anti-detection guarantee.
+- Export must acquire an exclusive per-profile lease, refusing an open browser. The restore authenticates the complete encrypted file before creating a new staged profile, checks safe file paths/entry types and size limits, then installs a **new UUID** without overwriting local profiles. Failed imports clean up staged files.
+- The package intentionally excludes proxy credentials and all OS vault passwords, locally installed extension packages, screenshots, API tokens and team sync keys. On restore, users must manually configure network settings, verify browser engine compatibility and re-attach trusted extensions.
+- Individual files are limited to 256 MiB and total uncompressed session data to 1 GiB, max 12,000 entries. Profiles beyond these bounds require a separate tested backup strategy. Production disaster recovery, browser migration and backup lifecycle testing remain outstanding.
+- A missing passphrase cannot be recovered. Do not use the format as a cloud sync protocol or as evidence of full GenLogin profile portability.
