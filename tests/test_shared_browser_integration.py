@@ -154,6 +154,25 @@ class SharedBrowserRealTests(unittest.TestCase):
         self.assertNotIn("Autumn test",str(report))
         self.assertTrue(eventually(lambda:all(not self.manager.active(pid) for pid in ids),timeout=20))
 
+    def test_cancel_interrupts_inflight_selector_wait_without_closing_profile(self):
+        """A cancellation must not wait for Playwright's 20-second selector timeout."""
+        profile=self.store.save(Profile(name="cancellable",browser="chromium",start_url=self.origin))
+        self.manager.start(profile.id)
+        self.assertTrue(eventually(lambda:(s:=self.manager._sessions.get(profile.id))
+                                  is not None and s.ready.is_set()))
+        run_id=self.manager.run_steps(profile.id,[
+            {"action":"wait_for","selector":"#never-existent-cancel-test"}])
+        self.assertTrue(eventually(lambda:(self.manager.last_run(profile.id) or {}).get("status")=="running"))
+        started=time.monotonic()
+        self.manager.cancel(profile.id)
+        self.assertTrue(eventually(lambda:(self.manager.last_run(profile.id) or {}).get("status")=="cancelled",timeout=5),
+                        "Cancel must interrupt a pending locator wait promptly")
+        self.assertLess(time.monotonic()-started,5.0)
+        self.assertEqual(self.manager.last_run(profile.id)["id"],run_id)
+        self.assertTrue(self.manager.active(profile.id),
+                        "Cancelling workflow must not close manually opened browser")
+        self.manager.stop(profile.id)
+
     def test_user_closes_last_page_and_recorder_redacts_text(self):
         profile=self.store.save(Profile(name="recorder",browser="chromium",start_url=self.origin))
         self.manager.start(profile.id)
