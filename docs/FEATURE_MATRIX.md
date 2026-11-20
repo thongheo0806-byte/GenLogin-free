@@ -49,3 +49,10 @@ The [official public release notes](https://genlogin.com/release-notes) currentl
 - The batch API is **disabled by default** along with the local API. On opt-in, bearer-authenticated endpoints include POST `/v1/batches`, GET `/v1/batches`, GET `/v1/batches/{uuid}` and POST `/v1/batches/{uuid}/cancel`.
 - Batch records are intentionally **in memory only**, retain up to 30 recent batches and do not automatically resume after process restart. Unlike the schedule journal, no workflow values or browser page content are written to disk by this component. Timeouts and late browser completions are marked uncertain, not falsely 'succeeded'.
 - Production acceptance still needs resource stress, long-running profile group tests, portable error recovery and a legally grounded GenLogin parity comparison.
+
+## Cancellation regression (2026-11-20, development only)
+
+- SharedBrowserManager.cancel now sets a thread-safe cancel flag **and** schedules cancellation of the currently executing asyncio task on its owning Playwright event loop.
+- This interrupts an in-flight selector/navigation wait rather than waiting up to 20 seconds for the Playwright action timeout. A workflow launched on a manually opened browser should cancel without closing that profile.
+- The Windows Chromium integration test intentionally waits for a nonexistent selector, requests cancellation and verifies a terminal `cancelled` result within five seconds. This tests manager behavior, not raw Playwright alone.
+- Cancellation cannot undo actions already accepted by a website, and it is not a guarantee that all outstanding I/O has stopped before a browser shutdown.
