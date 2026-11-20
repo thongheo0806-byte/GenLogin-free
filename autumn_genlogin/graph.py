@@ -61,9 +61,9 @@ def validate_graph(value: object) -> dict:
             if not isinstance(name,str) or not _VARIABLE_NAME.fullmatch(name):
                 raise ValueError("Variable name must be 1-32 ASCII letters, digits or underscores")
         if kind == "set_variable":
-            value = node["value"]
-            if (not isinstance(value,str) or len(value) > MAX_VARIABLE_VALUE or
-                "\x00" in value or "{{" in value or "}}" in value):
+            literal = node["value"]
+            if (not isinstance(literal,str) or len(literal) > MAX_VARIABLE_VALUE or
+                "\x00" in literal or "{{" in literal or "}}" in literal):
                 raise ValueError("Variables must be literal strings up to 4096 characters")
         if kind == "repeat" and (type(node["times"]) is not int or not 1 <= node["times"] <= MAX_REPEAT):
             raise ValueError("Repeat must be 1-20 iterations")
