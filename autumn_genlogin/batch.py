@@ -176,55 +176,59 @@ class BatchRunner:
             pass
 
     def _worker(self, batch_id: str, workflow: dict | list):
-        while True:
-            pid = self._next(batch_id)
-            if pid is None:
-                return
-            complete = threading.Event()
-            result: dict[str, object] = {}
-            already_open = self.manager.active(pid)
+        try:
+            while True:
+                pid = self._next(batch_id)
+                if pid is None:
+                    return
+                complete = threading.Event()
+                result: dict[str, object] = {}
+                already_open = self.manager.active(pid)
 
-            def on_finish(status: str, error: str | None):
-                result["status"] = status
-                result["error"] = error
-                complete.set()
+                def on_finish(status: str, error: str | None):
+                    result["status"] = status
+                    result["error"] = error
+                    complete.set()
 
-            try:
-                run_id = self.manager.start_workflow(pid, deepcopy(workflow), on_finish=on_finish)
-            except Exception as exc:
-                self._finish(batch_id, pid, "failed", type(exc).__name__)
-                continue
+                try:
+                    run_id = self.manager.start_workflow(pid, deepcopy(workflow), on_finish=on_finish)
+                except Exception as exc:
+                    self._finish(batch_id, pid, "failed", type(exc).__name__)
+                    continue
 
-            with self._lock:
-                batch = self._batches[batch_id]
-                for item in batch["items"]:
-                    if item["profile_id"] == pid:
-                        item["run_id"] = run_id
-                        if item["status"] == "submitting":
-                            item["status"] = "running"
+                with self._lock:
+                    batch = self._batches[batch_id]
+                    for item in batch["items"]:
+                        if item["profile_id"] == pid:
+                            item["run_id"] = run_id
+                            if item["status"] == "submitting":
+                                item["status"] = "running"
+                            break
+                    self._journal.save(batch)
+                    cancel = self._cancelled[batch_id]
+
+                started = time.monotonic()
+                cancellation_sent = False
+                while not complete.wait(0.2):
+                    if cancel.is_set() and not cancellation_sent:
+                        self._cancel_own_run(pid, run_id)
+                        cancellation_sent = True
+                    if time.monotonic()-started >= self.max_runtime_seconds:
+                        self._cancel_own_run(pid, run_id)
+                        self._finish(batch_id, pid, "uncertain", "TimeoutError")
                         break
-                self._journal.save(batch)
-                cancel = self._cancelled[batch_id]
-
-            started = time.monotonic()
-            cancellation_sent = False
-            while not complete.wait(0.2):
-                if cancel.is_set() and not cancellation_sent:
-                    self._cancel_own_run(pid, run_id)
-                    cancellation_sent = True
-                if time.monotonic()-started >= self.max_runtime_seconds:
-                    self._cancel_own_run(pid, run_id)
-                    self._finish(batch_id, pid, "uncertain", "TimeoutError")
-                    break
-            if complete.is_set():
-                terminal = str(result.get("status", "uncertain"))
-                self._finish(batch_id, pid, terminal, result.get("error"))
-            if not already_open:
-                # Do not oversubscribe a concurrency slot while auto-close is
-                # still releasing the previous profile's persistent context.
-                deadline = time.monotonic()+15
-                while self.manager.active(pid) and time.monotonic() < deadline:
-                    time.sleep(0.1)
+                if complete.is_set():
+                    terminal = str(result.get("status", "uncertain"))
+                    self._finish(batch_id, pid, terminal, result.get("error"))
+                if not already_open:
+                    # Do not oversubscribe a concurrency slot while auto-close is
+                    # still releasing the previous profile's persistent context.
+                    deadline = time.monotonic()+15
+                    while self.manager.active(pid) and time.monotonic() < deadline:
+                        time.sleep(0.1)
+        finally:
+            # Connections are thread-owned and Windows locks open SQLite files.
+            self.store.close_thread_connection()
 
     def cancel(self, batch_id: str) -> None:
         key = str(UUID(batch_id))
