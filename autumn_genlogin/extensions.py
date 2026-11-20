@@ -11,11 +11,14 @@ import shutil
 import stat
 import tempfile
 import zipfile
+from contextlib import ExitStack
+from datetime import datetime, timezone
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from uuid import UUID, uuid4
 
 from .storage import Store
+from .locks import ProfileLease
 
 MAX_FILES = 800
 MAX_TOTAL_BYTES = 25 * 1024 * 1024
@@ -76,6 +79,16 @@ def _check_staged(root: Path) -> dict:
     return _manifest(root)
 
 
+@dataclass(frozen=True)
+class ExtensionUpgrade:
+    id: str
+    old_id: str
+    new_id: str
+    profile_ids: tuple[str, ...]
+    status: str
+    created_utc: str
+
+
 class ExtensionLibrary:
     def __init__(self, store: Store):
         self.store = store
@@ -90,6 +103,14 @@ class ExtensionLibrary:
                 PRIMARY KEY (profile_id, extension_id),
                 FOREIGN KEY (profile_id) REFERENCES profiles(id),
                 FOREIGN KEY (extension_id) REFERENCES extension_packages(id))""")
+            conn.execute("""CREATE TABLE IF NOT EXISTS extension_upgrades (
+                id TEXT PRIMARY KEY,
+                old_id TEXT NOT NULL,
+                new_id TEXT NOT NULL,
+                attached_json TEXT NOT NULL,
+                status TEXT NOT NULL,
+                created_utc TEXT NOT NULL
+            )""")
 
     def list(self) -> list[ExtensionRecord]:
         with self.store._connect() as conn:
@@ -193,10 +214,111 @@ class ExtensionLibrary:
             paths.append(path.resolve(strict=True))
         return paths
 
+    def list_upgrades(self) -> list[ExtensionUpgrade]:
+        with self.store._connect() as conn:
+            rows = conn.execute("SELECT * FROM extension_upgrades ORDER BY rowid DESC").fetchall()
+        return [ExtensionUpgrade(row["id"], row["old_id"], row["new_id"],
+                                 tuple(json.loads(row["attached_json"])),
+                                 row["status"], row["created_utc"]) for row in rows]
+
+    def prepare_update(self, old_id: str, source: Path, *, archive: bool) -> ExtensionRecord:
+        """Import a *new, inactive* package so the GUI can preview scope changes.
+
+        A different name may be unrelated code. Only explicit user confirmation
+        may subsequently migrate profile associations to the new package.
+        """
+        old = self._get(old_id)
+        candidate = self.install_zip(source) if archive else self.install_folder(source)
+        if candidate.name != old.name or candidate.version == old.version:
+            self.remove(candidate.id)
+            raise ValueError("Updated extension must keep its name and change its version")
+        return candidate
+
+    def apply_update(self, old_id: str, new_id: str) -> ExtensionUpgrade:
+        """Atomically migrate attachments, preserving previous package for rollback.
+
+        Every affected profile receives a cross-process lease. Never mutate
+        extension files while any associated browser process is using them.
+        """
+        old, new = self._get(old_id), self._get(new_id)
+        if old.id == new.id or old.name != new.name or old.version == new.version:
+            raise ValueError("Incompatible extension update")
+        with self.store._connect() as conn:
+            ids = [r[0] for r in conn.execute(
+                "SELECT profile_id FROM profile_extensions WHERE extension_id=? ORDER BY profile_id",
+                (old.id,))]
+        upgrade_id = str(uuid4())
+        with ExitStack() as leases:
+            for pid in ids:
+                leases.enter_context(ProfileLease(self.store.base, pid))
+            with self.store._connect() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                found = [r[0] for r in conn.execute(
+                    "SELECT profile_id FROM profile_extensions WHERE extension_id=? ORDER BY profile_id",
+                    (old.id,))]
+                if found != ids:
+                    raise RuntimeError("Extension attachments changed during update; retry")
+                collisions = conn.execute(
+                    "SELECT profile_id FROM profile_extensions WHERE extension_id=? "
+                    "AND profile_id IN (SELECT profile_id FROM profile_extensions WHERE extension_id=?)",
+                    (new.id, old.id)).fetchall()
+                if collisions:
+                    raise ValueError("New package is already attached to an affected profile")
+                for pid in ids:
+                    conn.execute("INSERT INTO profile_extensions VALUES (?,?)", (pid, new.id))
+                    conn.execute("DELETE FROM profile_extensions WHERE profile_id=? AND extension_id=?",
+                                 (pid,old.id))
+                conn.execute("INSERT INTO extension_upgrades VALUES (?,?,?,?,?,?)",
+                             (upgrade_id,old.id,new.id,json.dumps(ids),"applied",
+                              datetime.now(timezone.utc).isoformat(timespec="seconds")))
+        return ExtensionUpgrade(upgrade_id,old.id,new.id,tuple(ids),"applied",
+                                datetime.now(timezone.utc).isoformat(timespec="seconds"))
+
+    def rollback_update(self, upgrade_id: str) -> ExtensionUpgrade:
+        upgrade_id = str(UUID(upgrade_id))
+        with self.store._connect() as conn:
+            row = conn.execute("SELECT * FROM extension_upgrades WHERE id=?",(upgrade_id,)).fetchone()
+        if row is None:
+            raise KeyError("Extension update not found")
+        if row["status"] != "applied":
+            raise ValueError("This extension update is no longer active")
+        ids = json.loads(row["attached_json"])
+        old_id, new_id = row["old_id"], row["new_id"]
+        self._get(old_id)
+        self._get(new_id)
+        with ExitStack() as leases:
+            for pid in sorted(ids):
+                leases.enter_context(ProfileLease(self.store.base, pid))
+            with self.store._connect() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                fresh = conn.execute("SELECT status FROM extension_upgrades WHERE id=?",
+                                     (upgrade_id,)).fetchone()
+                if fresh is None or fresh["status"] != "applied":
+                    raise ValueError("Update already rolled back")
+                for pid in ids:
+                    links = {r[0] for r in conn.execute(
+                        "SELECT extension_id FROM profile_extensions WHERE profile_id=?",(pid,))}
+                    if new_id not in links or old_id in links:
+                        raise RuntimeError("Profile extension associations changed; manual review required")
+                for pid in ids:
+                    conn.execute("INSERT INTO profile_extensions VALUES (?,?)",(pid,old_id))
+                    conn.execute("DELETE FROM profile_extensions WHERE profile_id=? AND extension_id=?",
+                                 (pid,new_id))
+                conn.execute("UPDATE extension_upgrades SET status='rolled_back' WHERE id=?",
+                             (upgrade_id,))
+        return ExtensionUpgrade(upgrade_id,old_id,new_id,tuple(ids),"rolled_back",
+                                row["created_utc"])
+
     def remove(self, extension_id: str) -> None:
         extension_id = str(UUID(extension_id))
         self._get(extension_id)
         with self.store._connect() as conn:
+            pending = conn.execute(
+                "SELECT 1 FROM extension_upgrades WHERE status='applied' "
+                "AND (old_id=? OR new_id=?) LIMIT 1",
+                (extension_id,extension_id)).fetchone()
+            if pending:
+                raise ValueError("Rollback is still available; roll back or keep this package")
             conn.execute("DELETE FROM profile_extensions WHERE extension_id=?", (extension_id,))
             conn.execute("DELETE FROM extension_packages WHERE id=?", (extension_id,))
         shutil.rmtree(self.directory / extension_id)
