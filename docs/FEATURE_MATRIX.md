@@ -19,7 +19,7 @@ The [official public release notes](https://genlogin.com/release-notes) currentl
 | Image click, video, AI, synchronizer, miniapps | [Automation](https://genlogin.com/automation) | **Not implemented** | Complete independent features and tests |
 | Full cloud browser-session sync | [Local/cloud profiles](https://docs.genlogin.com/group-profiles/local-and-cloud-profiles) | **Not implemented** | Secure session transfer, conflicts, rollback |
 | Optional team metadata sync | [Sharing](https://docs.genlogin.com/group-profiles/share-profile) | Encrypted metadata/workflows, loopback RBAC and revisions; redirect bearer-token fix | Production HTTPS, disaster recovery, wider security tests |
-| Public API compatibility | [GenLogin API](https://docs.genlogin.com/genlogin-api/profile-api/1.-profile-list) | Independent authenticated local API | Contract compatibility, versioned SDK |
+| Public API compatibility | [GenLogin API](https://docs.genlogin.com/genlogin-api/profile-api/1.-profile-list) | Authenticated, native /v1 loopback API and no-redirect Python SDK (development) | GenLogin protocol parity, stable contract versioning, external integration acceptance |
 | Release, license and reliability | Engineering acceptance | Test-only Windows CI, diagnostics, staged deletion | Full GUI acceptance, fault injection, license/SBOM, signing |
 
 ## Verification boundaries
@@ -64,3 +64,10 @@ The [official public release notes](https://genlogin.com/release-notes) currentl
 - Attached profiles must be closed; per-profile OS leases prevent updates/rollback while a Chromium instance has the profile open. Previous package contents are immutable and retained.
 - The SQLite upgrade record includes old/new immutable package UUIDs and affected profile UUIDs. Rollback is an explicit user action that refuses ambiguous association changes instead of guessing.
 - No Chrome Web Store integration, unattended download or automatic update is implemented. Source trust, permissions, compatibility and privacy require independent verification before production release.
+
+## 2026-11-20 opt-in local API SDK
+
+- Python stdlib client `autumn_genlogin.client.AutumnAPIClient` only accepts literal IPv4/IPv6 loopback HTTP URLs, bypasses environment HTTP proxies and refuses redirects to avoid bearer token forwarding.
+- Supports profile list/open/stop, graph/steps automation, recorder, latest execution, schedule history and bounded group batch operations. The SDK does **not** expose source-code execution or unauthorized external requests.
+- API error responses now map browser busy/resource conflicts to a sanitized HTTP 409, rather than disconnecting the client. The client has typed errors and no token in repr.
+- The native API is independent and **not** compatible with the GenLogin proprietary API. Formal OpenAPI contract certification, migration compatibility, complete SDK coverage, stress and a hostile local process threat model remain outstanding.
