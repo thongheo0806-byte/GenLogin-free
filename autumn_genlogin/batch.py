@@ -16,6 +16,8 @@ from uuid import UUID, uuid4
 
 from .graph import validate_graph
 from .models import validated_steps
+from .batch_history import BatchJournal
+from .locks import ProfileLease
 
 
 def _utc() -> str:
@@ -43,6 +45,8 @@ class BatchRunner:
         self._lock = threading.RLock()
         self._batches: dict[str, dict] = {}
         self._cancelled: dict[str, threading.Event] = {}
+        self._leases: dict[str, ProfileLease] = {}
+        self._journal = BatchJournal(store)
 
     def start(self, profile_ids: list[str], workflow: dict | list, *, max_parallel: int = 3) -> str:
         if not isinstance(profile_ids, list) or not 1 <= len(profile_ids) <= self.MAX_PROFILES:
@@ -59,31 +63,45 @@ class BatchRunner:
         for pid in ids:
             self.store.get(pid)
         ident = str(uuid4())
-        with self._lock:
-            if len(self._batches) >= self.MAX_SAVED_BATCHES:
-                older = [key for key, value in self._batches.items()
-                         if value["status"] in {"succeeded", "partial", "cancelled"}]
-                if not older:
-                    raise RuntimeError("Too many active batches; wait or cancel some")
-                del self._batches[older[0]]
-                self._cancelled.pop(older[0], None)
-            self._batches[ident] = {
-                "id": ident, "created_utc": _utc(), "finished_utc": None,
-                "status": "running", "max_parallel": max_parallel,
-                "cancel_requested": False,
-                "items": [
-                    {"profile_id": pid, "status": "queued", "run_id": None, "error_type": ""}
-                    for pid in ids
-                ],
-            }
-            self._cancelled[ident] = threading.Event()
-        # Browser work always happens off the UI/API threads.
+        lease = ProfileLease(self.store.base, ident)
+        lease.__enter__()
+        try:
+            with self._lock:
+                self._start_record(ident, ids, max_parallel, lease)
+        except BaseException:
+            lease.__exit__(None, None, None)
+            raise
         for index in range(min(max_parallel, len(ids))):
             threading.Thread(
                 target=self._worker, args=(ident, deepcopy(validated)),
                 name=f"autumn-batch-{ident[:8]}-{index}", daemon=True,
             ).start()
         return ident
+
+    def _start_record(self, ident, ids, max_parallel, lease):
+        # Caller holds the runner lock; only completed in-memory records
+        # are evicted. The SQLite audit trail is kept separately.
+        if len(self._batches) >= self.MAX_SAVED_BATCHES:
+            older = [key for key, value in self._batches.items()
+                     if value["status"] in {"succeeded", "partial", "cancelled"}]
+            if not older:
+                raise RuntimeError("Too many active batches; wait or cancel some")
+            del self._batches[older[0]]
+            self._cancelled.pop(older[0], None)
+        batch = {
+            "id": ident, "created_utc": _utc(), "finished_utc": None,
+            "status": "running", "max_parallel": max_parallel,
+            "cancel_requested": False,
+            "items": [
+                {"profile_id": pid, "status": "queued", "run_id": None, "error_type": ""}
+                for pid in ids
+            ],
+        }
+        # Commit the initial state before any worker can open a browser.
+        self._journal.save(batch)
+        self._batches[ident] = batch
+        self._cancelled[ident] = threading.Event()
+        self._leases[ident] = lease
 
     def get(self, batch_id: str) -> dict:
         key = str(UUID(batch_id))
