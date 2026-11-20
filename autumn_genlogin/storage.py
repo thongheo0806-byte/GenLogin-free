@@ -182,6 +182,9 @@ class Store:
                     exists = c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='profile_extensions'").fetchone()
                     if exists:
                         c.execute("DELETE FROM profile_extensions WHERE profile_id = ?", (profile_id,))
+                    has_history = c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='schedule_runs'").fetchone()
+                    if has_history:
+                        c.execute("DELETE FROM schedule_runs WHERE profile_id=?", (profile_id,))
                     has_jobs = c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='schedules'").fetchone()
                     if has_jobs:
                         c.execute("DELETE FROM schedules WHERE profile_id=?", (profile_id,))
