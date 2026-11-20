@@ -330,7 +330,14 @@ class SharedBrowserManager:
                 async def exists(selector):
                     page=await self._page(session)
                     return await page.locator(selector).first.count()>0
-                outcome=await execute_graph(payload,action=step_action,exists=exists,cancelled=session.cancel.is_set)
+                async def capture(selector):
+                    # Data is held only inside execute_graph's transient variables;
+                    # never put captured text into extracted results or activity logs.
+                    page=await self._page(session)
+                    content=await page.locator(selector).first.inner_text(timeout=20000)
+                    return content[:4096]
+                outcome=await execute_graph(payload,action=step_action,exists=exists,
+                                            capture=capture,cancelled=session.cancel.is_set)
                 if outcome["status"]=="cancelled":session.cancel.set()
             self._run_status(pid,"cancelled" if session.cancel.is_set() else "succeeded")
         except asyncio.CancelledError:

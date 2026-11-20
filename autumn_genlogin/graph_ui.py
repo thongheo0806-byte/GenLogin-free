@@ -90,14 +90,17 @@ class GraphEditor(ttk.Frame):
                                outline="#65a3ed", width=2, tags=(f"node:{ident}",))
             c.create_text(x, y-8, text=ident[:22], fill="white",
                           font=("Segoe UI Semibold", 10), tags=(f"node:{ident}",))
-            c.create_text(x, y+11, text=kind + (" / " + node["step"]["action"] if kind == "action" else ""),
+            detail = (" / " + node["step"]["action"] if kind == "action"
+                      else " / " + node["name"] if kind in {"set_variable","capture_text"} else "")
+            c.create_text(x, y+11, text=(kind + detail)[:27],
                           fill="#d9eaff", font=("Segoe UI", 9), tags=(f"node:{ident}",))
 
     def add_node(self):
-        kind = simpledialog.askstring("New node", "Type: action, condition, repeat, end", parent=self)
+        kind = simpledialog.askstring("New node",
+            "Type: action, condition, repeat, set_variable, capture_text", parent=self)
         if kind is None: return
-        if kind not in {"action", "condition", "repeat"}:
-            messagebox.showerror("Node", "Choose action, condition or repeat; start and end already exist")
+        if kind not in {"action", "condition", "repeat", "set_variable", "capture_text"}:
+            messagebox.showerror("Node", "Choose action, condition, repeat, set_variable or capture_text")
             return
         ident = simpledialog.askstring("Node ID", "Unique ID (letters, numbers, _ or -):", parent=self)
         if not ident or ident in self.nodes: return
@@ -112,6 +115,21 @@ class GraphEditor(ttk.Frame):
             node["selector"] = simpledialog.askstring("Condition", "CSS/Playwright selector exists?", parent=self) or ""
         if kind == "repeat":
             node["times"] = simpledialog.askinteger("Repeat", "Maximum iterations (1-20)", minvalue=1,maxvalue=20,parent=self) or 1
+        if kind in {"set_variable","capture_text"}:
+            name = simpledialog.askstring("Variable", "Name (ASCII letters, digits and _, max 32):",parent=self)
+            if name is None:
+                return
+            node["name"] = name
+            if kind == "set_variable":
+                value = simpledialog.askstring("Literal value", "Temporary value (not logged):",parent=self)
+                if value is None:
+                    return
+                node["value"] = value
+            else:
+                selector = simpledialog.askstring("Capture text", "CSS/Playwright selector:",parent=self)
+                if selector is None:
+                    return
+                node["selector"] = selector
         self.nodes[ident] = node
         i = len(self.positions)
         self.positions[ident] = (100 + (i % 4) * 205, 80 + (i // 4) * 120)
@@ -133,6 +151,14 @@ class GraphEditor(ttk.Frame):
         elif node["type"] == "repeat":
             value = simpledialog.askinteger("Times", "Iterations 1-20", initialvalue=node["times"], minvalue=1,maxvalue=20,parent=self)
             if value is not None: node["times"] = value
+        elif node["type"] in {"set_variable","capture_text"}:
+            name = simpledialog.askstring("Variable name", "Name:",initialvalue=node["name"],parent=self)
+            if name is None: return
+            field = "value" if node["type"] == "set_variable" else "selector"
+            label = "Literal value" if field == "value" else "Capture selector"
+            value = simpledialog.askstring(label,label,initialvalue=node[field],parent=self)
+            if value is None: return
+            node["name"], node[field] = name, value
         self.draw()
 
     def link(self):

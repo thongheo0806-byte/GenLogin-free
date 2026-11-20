@@ -13,7 +13,7 @@ The [official public release notes](https://genlogin.com/release-notes) currentl
 | Engine compatibility | [Playwright engines](https://playwright.dev/docs/browsers) | Chromium, Chrome, Edge, Firefox and WebKit launch lanes passed Windows CI | Multi-version compatibility, long-running crashes |
 | Extensions | [Extensions](https://docs.genlogin.com/group-profiles/extensions) | Local MV3 import plus confirmed offline version updates/rollback on stopped profiles (development) | Verified publisher signatures, marketplace, auto-updates, extension API compatibility |
 | Sequential automation | [Automation](https://genlogin.com/automation) | Typed JSON actions, results and local API | Advanced actions, error recovery, SDK |
-| Visual graph automation | [Automation](https://genlogin.com/automation) | Bounded condition/repeat/action graph, Tk editor | Full node catalog, variables, parallel branches, UI usability |
+| Visual graph automation | [Automation](https://genlogin.com/automation) | Bounded action/condition/repeat plus ephemeral literal and captured-text variables, Tk graph editor | Full GenLogin node catalog, parallel branches, advanced retries, GUI usability |
 | Recorder | [Automation](https://genlogin.com/automation) | Capture click/select/form selectors with private values redacted | Complex action replay and multi-page tests |
 | Scheduler | [Automation](https://genlogin.com/automation) | SQLite one-shot/interval scheduler, manual retry, per-run journal, terminal callback from real BrowserManager, authenticated run history API and GUI | Windows end-to-end, long-running resilience, external-process crash recovery and complete workflow traces; active app required |
 | Image click, video, AI, synchronizer, miniapps | [Automation](https://genlogin.com/automation) | **Not implemented** | Complete independent features and tests |
@@ -80,3 +80,11 @@ The [official public release notes](https://genlogin.com/release-notes) currentl
 - Completing a batch releases its lease only after the terminal snapshot was successfully persisted. Missing database writes fail closed. SQLite connections owned by batch threads are closed when each worker exits.
 - Active batches block deletion of their referenced profile, even if that profile has not launched yet. Deleting a profile linked to a terminal batch removes the **whole** batch history record, preventing orphaned references to deleted profiles.
 - This is not a transactional exactly-once guarantee for web actions, not durable scheduling of queued batch work and not GenLogin/Titan parity. Real Chromium Windows CI still needs to validate saved successful completion on each change.
+
+## 2026-11-20 local workflow variable nodes (development)
+
+- `set_variable` with `name` and literal `value` and `capture_text` with `name` and Playwright `selector` are explicit graph nodes. The graph designer can create/edit them. Up to 32 distinct ASCII-name variables and 4,096 characters per value are allowed. At most 500 graph node operations per execution, with repeat cap unchanged.
+- Action string fields can interpolate exactly `{{name}}` with no arbitrary expression evaluation. Actions are revalidated **after** interpolation. Missing variables, noncanonical placeholders, invalid URLs and expanded values above limits cause the workflow to fail rather than silently proceeding.
+- Captured page text is **tainted** and may populate later page actions (e.g. a form field) but may not be inserted into a `goto` URL, preventing accidental URL-based page-data exfiltration. Literal variables can supply navigation components.
+- Variables live only inside the asynchronous execution frame; neither terminal run result, SQLite batch/scheduler history nor activity log receives values. Capture uses real Playwright `inner_text` with a bounded locator timeout.
+- This development subset does not add a general-purpose scripting language, database bindings, flow-wide persistent variables, arbitrary network requests, or GenLogin/Titan compatibility.

@@ -168,3 +168,28 @@ See [audit remediation report](docs/AUDIT_2026-11-19.md) for exact regression te
 Batch Tasks executes one validated workflow on the selected group of profiles, up to six concurrently, recording per-profile results. Restarting the application restores the recent status history but **does not restart unfinished workflows**. If a browser action was in progress during a crash, the result will be `uncertain`. Check the website yourself before deciding whether to repeat that task. Queued tasks are marked cancelled after an interrupted process.
 
 The SQLite journal stores IDs, statuses, times, and safe error *types*, never cookies, extracted page content, workflow text or passwords. Up to 100 finished batches are retained. Deleting a profile also purges any finished batch history that references it. History does not imply that web transactions are reversible or executed exactly once.
+
+## Graph variables and text capture (development)
+
+In the **Automation → Node graph** editor, add a `set_variable` node to store a temporary literal, or `capture_text` to read text from a page selector. Link it to an action node and use `{{variable_name}}` in string fields such as `fill.text` or selectors. All values live only for one workflow run, with at most 32 variables and 4,096 characters per value.
+
+Example graph fragment (link the nodes sequentially between `start` and `end`):
+
+```json
+{
+  "format": "AutumnGenLogin/graph-1",
+  "nodes": [
+    {"id":"start","type":"start"},
+    {"id":"read","type":"capture_text","name":"headline","selector":"h1"},
+    {"id":"fill","type":"action","step":{"action":"fill","selector":"#notes","text":"{{headline}}"}},
+    {"id":"end","type":"end"}
+  ],
+  "edges": [
+    {"from":"start","to":"read","branch":"next"},
+    {"from":"read","to":"fill","branch":"next"},
+    {"from":"fill","to":"end","branch":"next"}
+  ]
+}
+```
+
+Captured page text cannot be substituted into navigation URLs: this prevents accidental exfiltration of page content through `goto`. Literal-only variables can provide URL components; all expanded actions must pass validation again. The workflow does not store or show captured values in logs, the scheduler or batch history. No arbitrary Python/JavaScript execution is supported.
