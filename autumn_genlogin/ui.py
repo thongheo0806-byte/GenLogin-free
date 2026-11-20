@@ -13,6 +13,7 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 
 from .api import LocalAPI
 from .batch import BatchRunner
+from .profile_backup import export_encrypted_profile, restore_encrypted_profile
 from .browser_shared import SharedBrowserManager
 from .graph_ui import GraphEditor
 from .scheduler import ScheduleStore, Scheduler
@@ -182,6 +183,8 @@ class App:
         ttk.Button(top, text="Diagnostics", command=self.show_diagnostics).pack(side="right", padx=(10, 0))
         ttk.Button(top, text="Export metadata", command=self.export_profiles).pack(side="right", padx=(10, 0))
         ttk.Button(top, text="Import metadata", command=self.import_profiles).pack(side="right")
+        ttk.Button(top, text="Encrypted backup", command=self.backup_profile).pack(side="right", padx=(10, 0))
+        ttk.Button(top, text="Restore backup", command=self.restore_profile).pack(side="right", padx=(10, 0))
         tabs = ttk.Notebook(page)
         tabs.pack(fill="both", expand=True)
         profile_tab, flow_tab, batch_tab, extensions_tab, schedule_tab, cloud_tab, logs_tab = (ttk.Frame(tabs, padding=(0, 16)) for _ in range(7))
@@ -404,6 +407,79 @@ class App:
         messagebox.showinfo("AutumnGenLogin diagnostics",
                             "\n".join(lines) + "\n\n" + str(summary), parent=self.root)
         self.notice(f"Diagnostics: {summary['failed']} failures, {summary['warnings']} warnings")
+
+    def backup_profile(self):
+        pid = self.selected_id()
+        if not pid:
+            return
+        if self.manager.active(pid):
+            messagebox.showwarning("Encrypted profile backup",
+                                   "Close this browser profile before backing up its session.",
+                                   parent=self.root)
+            return
+        if not messagebox.askyesno("Sensitive browser-data backup",
+                                   "The encrypted backup contains browser cookies, sessions and local storage.\n"
+                                   "It intentionally excludes OS vault passwords and installed extension packages.\n\n"
+                                   "Keep the passphrase private. Lost passphrases cannot be recovered. Continue?",
+                                   parent=self.root):
+            return
+        target = filedialog.asksaveasfilename(title="Save encrypted profile backup",
+                        defaultextension=".aglb", filetypes=[("Autumn encrypted backup","*.aglb")])
+        if not target:
+            return
+        secret = simpledialog.askstring("Encrypt profile",
+                        "Enter a strong passphrase (12+ characters):", show="*",parent=self.root)
+        if secret is None:
+            return
+        check = simpledialog.askstring("Confirm passphrase",
+                        "Re-enter the backup passphrase:", show="*",parent=self.root)
+        if secret != check:
+            messagebox.showerror("Encrypted backup","Passphrases do not match.",parent=self.root)
+            return
+        def worker():
+            try:
+                count = export_encrypted_profile(self.store,pid,Path(target),secret)
+            except Exception as exc:
+                self.root.after(0,lambda msg=str(exc):messagebox.showerror(
+                    "Encrypted backup",msg,parent=self.root))
+            else:
+                self.root.after(0,lambda:self.notice(f"Encrypted profile backup saved ({count} files)"))
+            finally:
+                self.store.close_thread_connection()
+        threading.Thread(target=worker,daemon=True,name="autumn-backup-export").start()
+
+    def restore_profile(self):
+        source = filedialog.askopenfilename(title="Restore encrypted profile backup",
+                        filetypes=[("Autumn encrypted backup","*.aglb")])
+        if not source:
+            return
+        if not messagebox.askyesno("Restore sensitive profile data",
+                                   "Restore browser data as a NEW local profile?\n"
+                                   "Existing profiles will not be overwritten.\n"
+                                   "Proxy passwords and extension packages are NOT restored.",
+                                   parent=self.root):
+            return
+        secret = simpledialog.askstring("Decrypt profile",
+                        "Enter the backup passphrase:", show="*",parent=self.root)
+        if secret is None:
+            return
+        def worker():
+            try:
+                profile = restore_encrypted_profile(self.store,Path(source),secret)
+            except Exception as exc:
+                self.root.after(0,lambda msg=str(exc):messagebox.showerror(
+                    "Restore backup",msg,parent=self.root))
+            else:
+                def done():
+                    self.refresh()
+                    self.notice("Restored encrypted profile: "+profile.name)
+                    messagebox.showinfo("Profile restored",
+                        "Restored a NEW profile. Reconfigure proxy passwords and "
+                        "review browser compatibility before launching it.",parent=self.root)
+                self.root.after(0,done)
+            finally:
+                self.store.close_thread_connection()
+        threading.Thread(target=worker,daemon=True,name="autumn-backup-restore").start()
 
     def export_profiles(self):
         path = filedialog.asksaveasfilename(defaultextension=".json", filetypes=[("JSON", "*.json")], initialfile="autumn-profiles.json")
