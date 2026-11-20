@@ -102,6 +102,10 @@ class BatchHistoryTests(unittest.TestCase):
         self.assertNotIn("#password",stored)
         self.assertNotIn("workflow",stored)
         self.assertEqual(json.loads(stored)["id"],ident)
+        # On Windows a completed result can be visible before the worker's
+        # SQLite handle is closed. Wait for worker teardown before deleting
+        # the temporary test database directory.
+        self.assertTrue(runner.wait(ident,timeout=5))
         with self.assertRaises(ValueError):
             runner._journal.list(limit=101)
 
