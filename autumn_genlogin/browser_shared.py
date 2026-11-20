@@ -399,9 +399,27 @@ class SharedBrowserManager:
                 self._runs[pid]["error"]=error
 
     def cancel(self,pid):
+        """Interrupt an in-flight Playwright wait, not just the next step.
+
+        Browser objects and asyncio tasks must only be touched on the shared
+        driver's event loop. A cancellation before task startup remains latched
+        through session.cancel for the next action/graph check.
+        """
         with self._lock:
             session=self._sessions.get(pid)
-            if session:session.cancel.set()
+            task=session.automation if session else None
+            if session:
+                session.cancel.set()
+            loop=self._loop
+        if task and loop and loop.is_running():
+            def interrupt():
+                if not task.done():
+                    task.cancel()
+            try:
+                loop.call_soon_threadsafe(interrupt)
+            except RuntimeError:
+                # Driver already shutting down: session cancellation is latched.
+                pass
 
     def last_run(self,pid):
         with self._lock:
