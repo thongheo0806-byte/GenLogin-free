@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -23,10 +24,23 @@ class BatchHistoryTests(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
+        # addCleanup executes LIFO: all daemon batch workers must close their
+        # thread-local SQLite handles BEFORE deleting the Windows tempdir.
+        self.addCleanup(self._await_workers)
         self.store=Store(Path(self.temp.name))
         self.profiles=[self.store.save(Profile(name=f"persistent-{i}")) for i in range(3)]
         self.ids=[p.id for p in self.profiles]
         self.flow=[{"action":"wait","seconds":0}]
+
+    @staticmethod
+    def _await_workers():
+        for worker in threading.enumerate():
+            if worker.name.startswith("autumn-batch-") and worker is not threading.current_thread():
+                worker.join(timeout=6)
+        leftovers = [worker.name for worker in threading.enumerate()
+                     if worker.name.startswith("autumn-batch-")]
+        if leftovers:
+            raise AssertionError(f"Batch worker did not close: {leftovers!r}")
 
     def test_successful_batch_persists_across_new_runner_no_replay(self):
         original=BatchRunner(self.store,FakeManager(delay=0.08))
