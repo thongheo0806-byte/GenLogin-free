@@ -9,12 +9,17 @@ from copy import deepcopy
 from collections import deque
 from collections.abc import Awaitable, Callable
 from typing import Any
+import re
 
 from .models import validated_steps
 
 MAX_NODES = 100
 MAX_EXECUTIONS = 500
 MAX_REPEAT = 20
+MAX_VARIABLES = 32
+MAX_VARIABLE_VALUE = 4096
+_VARIABLE_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,31}\Z")
+_PLACEHOLDER = re.compile(r"\{\{([A-Za-z_][A-Za-z0-9_]{0,31})\}\}")
 
 
 def validate_graph(value: object) -> dict:
@@ -40,15 +45,26 @@ def validate_graph(value: object) -> dict:
         props = {"start": {"id", "type"}, "end": {"id", "type"},
                  "action": {"id", "type", "step"},
                  "condition": {"id", "type", "selector"},
-                 "repeat": {"id", "type", "times"}}
+                 "repeat": {"id", "type", "times"},
+                 "set_variable": {"id", "type", "name", "value"},
+                 "capture_text": {"id", "type", "name", "selector"}}
         if kind not in props or set(node) != props[kind]:
             raise ValueError(f"Invalid {kind} node fields")
         if kind == "action":
             validated_steps([node["step"]])
-        if kind == "condition":
+        if kind in {"condition","capture_text"}:
             selector = node["selector"]
             if not isinstance(selector, str) or not selector or len(selector) > 500 or any(x in selector for x in "\r\n\x00"):
-                raise ValueError("Invalid graph condition selector")
+                raise ValueError("Invalid graph selector")
+        if kind in {"set_variable","capture_text"}:
+            name = node["name"]
+            if not isinstance(name,str) or not _VARIABLE_NAME.fullmatch(name):
+                raise ValueError("Variable name must be 1-32 ASCII letters, digits or underscores")
+        if kind == "set_variable":
+            value = node["value"]
+            if (not isinstance(value,str) or len(value) > MAX_VARIABLE_VALUE or
+                "\x00" in value or "{{" in value or "}}" in value):
+                raise ValueError("Variables must be literal strings up to 4096 characters")
         if kind == "repeat" and (type(node["times"]) is not int or not 1 <= node["times"] <= MAX_REPEAT):
             raise ValueError("Repeat must be 1-20 iterations")
         if kind == "start": start_nodes.append(ident)
@@ -56,6 +72,8 @@ def validate_graph(value: object) -> dict:
         by_id[ident] = node
     if len(start_nodes) != 1 or len(end_nodes) != 1:
         raise ValueError("Graph requires exactly one start and one end")
+    if len({n["name"] for n in nodes if n["type"] in {"set_variable","capture_text"}}) > MAX_VARIABLES:
+        raise ValueError("Graph may define at most 32 distinct variables")
     successors: dict[str, dict[str, str]] = {i: {} for i in by_id}
     for edge in edges:
         if not isinstance(edge, dict) or set(edge) != {"from", "to", "branch"}:
@@ -106,31 +124,73 @@ def steps_to_graph(steps: list[dict]) -> dict:
     return validate_graph({"format": "AutumnGenLogin/graph-1", "nodes": nodes, "edges": edges})
 
 
+def _expand(template: str, variables: dict[str, tuple[str, bool]], *, url: bool = False) -> str:
+    """Expand only {{name}} placeholders, with no eval or expression support.
+
+    Captured page text is tainted and cannot flow into navigation URLs, which
+    could otherwise unintentionally leak page content to another origin.
+    """
+    def substitute(match: re.Match) -> str:
+        name = match.group(1)
+        if name not in variables:
+            raise ValueError("Undefined workflow variable: " + name)
+        value, captured = variables[name]
+        if url and captured:
+            raise ValueError("Captured page text cannot be inserted into a navigation URL")
+        return value
+    result = _PLACEHOLDER.sub(substitute, template)
+    if "{{" in result or "}}" in result:
+        raise ValueError("Invalid workflow variable placeholder")
+    if len(result) > MAX_VARIABLE_VALUE:
+        raise ValueError("Expanded step text exceeds 4096 characters")
+    return result
+
+
 async def execute_graph(graph: dict, *, action: Callable[[dict], Awaitable[None]],
                         exists: Callable[[str], Awaitable[bool]],
+                        capture: Callable[[str], Awaitable[str]] | None = None,
                         cancelled: Callable[[], bool] = lambda: False) -> dict:
     graph = validate_graph(graph)
     nodes = {x["id"]: x for x in graph["nodes"]}
     edges = {(x["from"], x["branch"]): x["to"] for x in graph["edges"]}
     current = next(x["id"] for x in graph["nodes"] if x["type"] == "start")
     repeat_count: dict[str, int] = {}
+    # Transient, per-execution state. Never return variable values in run status.
+    variables: dict[str, tuple[str, bool]] = {}
     operations = 0
     while operations < MAX_EXECUTIONS:
         if cancelled():
             return {"status": "cancelled", "operations": operations}
         node = nodes[current]
-        if node["type"] == "end":
+        kind = node["type"]
+        if kind == "end":
             return {"status": "succeeded", "operations": operations}
         operations += 1
         label = "next"
-        if node["type"] == "action":
-            await action(node["step"])
-        elif node["type"] == "condition":
-            label = "yes" if await exists(node["selector"]) else "no"
-        elif node["type"] == "repeat":
+        if kind == "action":
+            step = {
+                key: _expand(value, variables, url=key == "url") if isinstance(value, str) else value
+                for key, value in node["step"].items()
+            }
+            # Guard against a variable expansion changing a URL scheme, a step
+            # shape or string-length limits after the initial graph validation.
+            await action(validated_steps([step])[0])
+        elif kind == "condition":
+            label = "yes" if await exists(_expand(node["selector"], variables)) else "no"
+        elif kind == "repeat":
             repeat_count[current] = repeat_count.get(current, 0) + 1
             label = "yes" if repeat_count[current] <= node["times"] else "no"
             if label == "no":
                 repeat_count[current] = 0
+        elif kind == "set_variable":
+            variables[node["name"]] = (node["value"], False)
+        elif kind == "capture_text":
+            if capture is None:
+                raise RuntimeError("Browser text capture is not available in this workflow runner")
+            selector = _expand(node["selector"], variables)
+            text = await capture(selector)
+            if not isinstance(text, str):
+                raise TypeError("Browser capture must return text")
+            variables[node["name"]] = (text[:MAX_VARIABLE_VALUE], True)
         current = edges[(current, label)]
     raise RuntimeError(f"Graph exceeded its {MAX_EXECUTIONS}-operation safety limit")
