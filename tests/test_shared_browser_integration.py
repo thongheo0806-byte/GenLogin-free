@@ -161,6 +161,40 @@ class SharedBrowserRealTests(unittest.TestCase):
         self.assertNotIn("Autumn test",str(imported))
         self.assertTrue(eventually(lambda:all(not self.manager.active(pid) for pid in ids),timeout=20))
 
+    def test_graph_capture_text_passes_browser_data_without_logging_or_persisting(self):
+        """Real Chromium: capture local heading, fill input, keep value transient."""
+        profile=self.store.save(Profile(name="graph-capture",browser="chromium",start_url=self.origin))
+        self.manager.start(profile.id)
+        self.assertTrue(eventually(lambda:(s:=self.manager._sessions.get(profile.id))
+                                  is not None and s.ready.is_set()))
+        graph={
+            "format":"AutumnGenLogin/graph-1",
+            "nodes":[
+                {"id":"start","type":"start"},
+                {"id":"capture","type":"capture_text","name":"headline","selector":"#title"},
+                {"id":"fill","type":"action","step":{
+                    "action":"fill","selector":"#secret","text":"{{headline}}"}},
+                {"id":"end","type":"end"},
+            ],
+            "edges":[
+                {"from":"start","to":"capture","branch":"next"},
+                {"from":"capture","to":"fill","branch":"next"},
+                {"from":"fill","to":"end","branch":"next"},
+            ],
+        }
+        self.manager.run_graph(profile.id,graph)
+        self.assertTrue(eventually(lambda:(self.manager.last_run(profile.id) or {}).get("status")
+                                  in ("succeeded","failed"),timeout=30))
+        result=self.manager.last_run(profile.id)
+        self.assertEqual(result["status"],"succeeded",result["error"])
+        async def check():
+            page=self.manager._sessions[profile.id].context.pages[0]
+            return await page.locator("#secret").input_value()
+        self.assertEqual(self.manager._submit(check()).result(timeout=15),"Autumn test")
+        self.assertEqual(result["extracted"],[])
+        self.assertNotIn("Autumn test",str(list(self.manager.events.queue)))
+        self.manager.stop(profile.id)
+
     def test_cancel_interrupts_inflight_selector_wait_without_closing_profile(self):
         """A cancellation must not wait for Playwright's 20-second selector timeout."""
         profile=self.store.save(Profile(name="cancellable",browser="chromium",start_url=self.origin))
