@@ -102,7 +102,7 @@ def validated_steps(source: object) -> list[dict]:
     if not isinstance(source, list) or not 1 <= len(source) <= 100:
         raise ValueError("Workflow must be a list of 1-100 steps")
     kinds = {
-        "goto": ("url",), "click": ("selector",), "fill": ("selector", "text"),
+        "goto": ("url",), "click": ("selector",), "click_image": ("template_id", "confidence"), "fill": ("selector", "text"),
         "wait": ("seconds",), "wait_for": ("selector",),
         "screenshot": (), "extract_text": ("selector",),
         "press": ("selector", "key"), "check": ("selector",),
@@ -119,13 +119,19 @@ def validated_steps(source: object) -> list[dict]:
             raise ValueError(f"Step {number}: unexpected or missing fields")
         for key in kinds[action]:
             value = item[key]
-            if key == "seconds":
-                if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 <= value <= 30:
+            if key in {"seconds", "confidence"}:
+                if isinstance(value, bool) or not isinstance(value, (int, float)):
+                    raise ValueError(f"Step {number}: {key} must be numeric")
+                if key == "seconds" and not 0 <= value <= 30:
                     raise ValueError(f"Step {number}: wait must be 0-30 seconds")
+                if key == "confidence" and not 0.90 <= value <= 1:
+                    raise ValueError(f"Step {number}: image confidence must be 0.90-1.00")
             elif not isinstance(value, str) or (not value and key != "text") or len(value) > 4096:
                 raise ValueError(f"Step {number}: invalid {key}")
         if action == "goto":
             valid_http_url(item["url"])
+        if action == "click_image" and not re.fullmatch(r"[0-9a-f]{64}", item["template_id"]):
+            raise ValueError(f"Step {number}: invalid image template ID")
         if "selector" in item and any(c in item["selector"] for c in "\x00\r\n"):
             raise ValueError(f"Step {number}: invalid selector")
         steps.append(item.copy())
