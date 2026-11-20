@@ -6,7 +6,7 @@ The [official public release notes](https://genlogin.com/release-notes) currentl
 
 | Capability | GenLogin reference | AutumnGenLogin development subset | Parity/evidence gap |
 |---|---|---|---|
-| Profile CRUD, clone, local session | [Profiles](https://docs.genlogin.com/group-profiles/create-profile/overview) | SQLite catalog, persistent user data, cross-process locks, Windows Chromium tests | GUI end-to-end, migration and failure injection |
+| Profile CRUD, clone, local session | [Profiles](https://docs.genlogin.com/group-profiles/create-profile/overview) | SQLite catalog, persistent data, process locks and opt-in encrypted local session backup/restore (development) | Full UI acceptance, browser portability, migration, large-profile fault injection |
 | Groups, tags, bulk management | [Groups](https://docs.genlogin.com/group-profiles/group-profiles) | Basic groups/tags, plus bounded local batch automation across a selected group with safe cancellation | Full GenLogin task scheduler/group assignment equivalence, durable batch history, UI performance, hierarchy |
 | Titan/fingerprint rendering | [Technology](https://docs.genlogin.com/) | **Not implemented or verified**. Playwright engines are not Titan | Authorized baseline executable, differential tests, licenses |
 | Proxy, locale, WebRTC | [Network](https://docs.genlogin.com/group-profiles/create-profile/network-and-webrtc) | Validated profile settings and proxy options | Real proxy and leak/consistency verification |
