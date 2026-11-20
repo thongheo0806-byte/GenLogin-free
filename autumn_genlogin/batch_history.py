@@ -78,11 +78,31 @@ class BatchJournal:
         safe = self._sanitized(batch)
         payload = json.dumps(safe, separators=(",", ":"),ensure_ascii=True)
         with self.store._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            exists = conn.execute("SELECT 1 FROM batch_history WHERE id=?",
+                                  (safe["id"],)).fetchone()
+            if exists is None:
+                # Atomic with profile deletion: do not register a batch for an
+                # ID removed since BatchRunner's earlier input validation.
+                for item in safe["items"]:
+                    present = conn.execute("SELECT 1 FROM profiles WHERE id=?",
+                                           (item["profile_id"],)).fetchone()
+                    if present is None:
+                        raise KeyError("Profile no longer exists")
             conn.execute(
                 "INSERT INTO batch_history(id,snapshot_json,created_utc) VALUES (?,?,?) "
                 "ON CONFLICT(id) DO UPDATE SET snapshot_json=excluded.snapshot_json",
                 (safe["id"],payload,safe["created_utc"]),
             )
+            if exists is None:
+                # Keep a bounded number of recent records. Never prune an
+                # in-progress batch owned by another live application.
+                older = conn.execute("SELECT id,snapshot_json FROM batch_history "
+                                     "ORDER BY rowid DESC LIMIT -1 OFFSET ?",
+                                     (self.HISTORY_LIMIT,)).fetchall()
+                for row in older:
+                    if json.loads(row["snapshot_json"])["status"] in self.BATCH_TERMINAL:
+                        conn.execute("DELETE FROM batch_history WHERE id=?",(row["id"],))
 
     def _recover(self, snapshot: dict) -> dict:
         """Distinguish an unowned crash from a live batch in another instance."""
