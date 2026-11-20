@@ -7,7 +7,7 @@ The [official public release notes](https://genlogin.com/release-notes) currentl
 | Capability | GenLogin reference | AutumnGenLogin development subset | Parity/evidence gap |
 |---|---|---|---|
 | Profile CRUD, clone, local session | [Profiles](https://docs.genlogin.com/group-profiles/create-profile/overview) | SQLite catalog, persistent data, process locks and opt-in encrypted local session backup/restore (development) | Full UI acceptance, browser portability, migration, large-profile fault injection |
-| Groups, tags, bulk management | [Groups](https://docs.genlogin.com/group-profiles/group-profiles) | Basic groups/tags, plus bounded local batch automation across a selected group with safe cancellation | Full GenLogin task scheduler/group assignment equivalence, durable batch history, UI performance, hierarchy |
+| Groups, tags, bulk management | [Groups](https://docs.genlogin.com/group-profiles/group-profiles) | Groups/tags, bounded batch automation and SQLite history of per-profile terminal outcomes with crash-safe uncertainty (development) | Complete GenLogin task workflow parity, long-run reliability, UI performance, hierarchy |
 | Titan/fingerprint rendering | [Technology](https://docs.genlogin.com/) | **Not implemented or verified**. Playwright engines are not Titan | Authorized baseline executable, differential tests, licenses |
 | Proxy, locale, WebRTC | [Network](https://docs.genlogin.com/group-profiles/create-profile/network-and-webrtc) | Validated profile settings and proxy options | Real proxy and leak/consistency verification |
 | Engine compatibility | [Playwright engines](https://playwright.dev/docs/browsers) | Chromium, Chrome, Edge, Firefox and WebKit launch lanes passed Windows CI | Multi-version compatibility, long-running crashes |
@@ -47,7 +47,7 @@ The [official public release notes](https://genlogin.com/release-notes) currentl
 - Profiles remain independent persistent contexts. Unlike a native synchronizer, browser actions are **not mirrored live** between profiles.
 - Each batch reports queued/submitting/running/succeeded/failed/cancelled/uncertain per-profile states and safely redacted exception types. Cancellation requests only affect runs whose UUID matches that batch's accepted BrowserManager run; queued profiles are never launched after cancellation.
 - The batch API is **disabled by default** along with the local API. On opt-in, bearer-authenticated endpoints include POST `/v1/batches`, GET `/v1/batches`, GET `/v1/batches/{uuid}` and POST `/v1/batches/{uuid}/cancel`.
-- Batch records are intentionally **in memory only**, retain up to 30 recent batches and do not automatically resume after process restart. Unlike the schedule journal, no workflow values or browser page content are written to disk by this component. Timeouts and late browser completions are marked uncertain, not falsely 'succeeded'.
+- Batch records persist to a new `batch_history` SQLite table. A bounded 30-batch in-memory working set remains, with up to 100 completed history records retained. Only IDs, timestamps, statuses and safe exception type names are stored; workflow payloads, extracted text and cookies are never written to the journal. Batch execution still requires the application to remain open. No automatic replay occurs after restart.
 - Production acceptance still needs resource stress, long-running profile group tests, portable error recovery and a legally grounded GenLogin parity comparison.
 
 ## Cancellation regression (2026-11-20, development only)
@@ -71,3 +71,12 @@ The [official public release notes](https://genlogin.com/release-notes) currentl
 - Supports profile list/open/stop, graph/steps automation, recorder, latest execution, schedule history and bounded group batch operations. The SDK does **not** expose source-code execution or unauthorized external requests.
 - API error responses now map browser busy/resource conflicts to a sanitized HTTP 409, rather than disconnecting the client. The client has typed errors and no token in repr.
 - The native API is independent and **not** compatible with the GenLogin proprietary API. Formal OpenAPI contract certification, migration compatibility, complete SDK coverage, stress and a hostile local process threat model remain outstanding.
+
+## 2026-11-20 durable batch completion journal (development)
+
+- A write-ahead record is saved **before** each profile's asynchronous browser dispatch. This preserves the distinction between queued (known not submitted) and submitting/running (possibly acted on a website).
+- An OS-backed per-batch lease remains held while a live worker pool exists. On a later read, another app instance does not overwrite a live batch it cannot lock. After an unclean shutdown, only a batch whose lease can be acquired is recovered: formerly submitting/running records become `uncertain`, queued records `cancelled`, and the batch is marked `partial` or `cancelled`. No workflow content is stored or replayed.
+- Recovering history does not prove what a website actually processed before a crash. Users must manually inspect external effects before considering any rerun.
+- Completing a batch releases its lease only after the terminal snapshot was successfully persisted. Missing database writes fail closed. SQLite connections owned by batch threads are closed when each worker exits.
+- Active batches block deletion of their referenced profile, even if that profile has not launched yet. Deleting a profile linked to a terminal batch removes the **whole** batch history record, preventing orphaned references to deleted profiles.
+- This is not a transactional exactly-once guarantee for web actions, not durable scheduling of queued batch work and not GenLogin/Titan parity. Real Chromium Windows CI still needs to validate saved successful completion on each change.
