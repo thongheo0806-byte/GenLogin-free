@@ -1,0 +1,46 @@
+# Run only after you have provisioned a trusted, offline Ollama model.
+# No host ports, no shared application data directories, no external route.
+name: autumngenlogin-ai-lab
+services:
+  local-model:
+    image: ${AUTUMN_LAB_OLLAMA_IMAGE:?Choose and review an exact Ollama image version}
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=256m
+    volumes:
+      # Mount only a pre-provisioned *model* directory. Never application data.
+      - type: bind
+        source: ${AUTUMN_LAB_OLLAMA_MODELS:?Provide a local directory containing an offline Ollama model}
+        target: /root/.ollama
+        read_only: true
+    networks: [private-lab]
+  agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on: [local-model]
+    environment:
+      AUTUMN_AI_LAB_ISOLATED: "1"
+      AUTUMN_LAB_MODEL: ${AUTUMN_LAB_MODEL:?Choose a model already provisioned locally}
+      BROWSER_USE_AUTO_LOGIN: "false"
+      ANONYMIZED_TELEMETRY: "false"
+      HTTP_PROXY: ""
+      HTTPS_PROXY: ""
+      ALL_PROXY: ""
+      OPENAI_API_KEY: ""
+      BROWSER_USE_API_KEY: ""
+    read_only: true
+    user: "10001:10001"
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 128
+    mem_limit: 2g
+    shm_size: 256mb
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,exec,size=512m
+    networks: [private-lab]
+networks:
+  private-lab:
+    internal: true
