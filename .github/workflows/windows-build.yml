@@ -134,3 +134,18 @@ jobs:
           AUTUMN_E2E: '1'
           AUTUMN_BRANDED_ENGINE: '1'
         run: python -m unittest discover -s tests -p "test_shared_browser_integration.py" -k branded -v
+
+  # This does not execute an LLM. It checks the real Docker Compose-resolved
+  # isolation contract without introducing browser-use into the desktop app.
+  ai-lab-isolation-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check AI lab network and mount isolation without running containers
+        env:
+          AUTUMN_LAB_OLLAMA_IMAGE: "ollama/ollama:static-contract-only"
+          AUTUMN_LAB_OLLAMA_MODELS: "/tmp/synthetic-model-path"
+          AUTUMN_LAB_MODEL: "synthetic:qa"
+        run: |
+          docker compose -f experiments/browser_use_lab/compose.yaml config --format json |
+            python -m experiments.browser_use_lab.check_compose

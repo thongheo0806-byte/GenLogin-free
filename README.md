@@ -7,6 +7,12 @@
 **Project status: v0.5 development baseline, updated 2026-11-20; incomplete feature parity.** This development branch includes a draggable node graph, recorder, opt-in encrypted team metadata hub, durable local scheduler, five engine adapters, shared Playwright driver and Windows regression tests. The release build is disabled; a passing test is not an approval to ship.
 
 
+## Experimental isolated browser-use AI lab (NOT a product feature)
+
+The `experiments/browser_use_lab/` project contains a **separate, opt-in research experiment** using exactly pinned `browser-use==1.0.7` and an operator-prepared local Ollama model. The model-generated agent may execute Python, so there is **no safe direct integration with user profile data**. The lab operates only on its own synthetic localhost test page inside a restricted Docker Compose internal network with no application data mounts, no host ports, telemetry disabled and a new temporary browser. CI validates the security policy and Compose configuration only; it **does not claim a successful real LLM inference run**.
+
+See [AI sandbox lab](docs/AI_LAB_ISOLATION.md). Do not use this on real websites or personal accounts.
+
 ## Optional local image-click automation (development)
 
 An **opt-in** image-matching action is available using OpenCV without sending screenshots to an external service. Install separately:
