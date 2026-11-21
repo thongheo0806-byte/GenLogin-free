@@ -15,6 +15,7 @@ from .api import LocalAPI
 from .batch import BatchRunner
 from .qa_sync import LocalQASynchronizer
 from .miniapps import MiniAppLibrary
+from .cloud_sessions import CloudSessionHandoff
 from .profile_backup import export_encrypted_profile, restore_encrypted_profile
 from .browser_shared import SharedBrowserManager
 from .graph_ui import GraphEditor
@@ -1020,8 +1021,11 @@ class App:
             messagebox.showerror("Schedule retry", str(exc), parent=self.root)
 
     def _build_cloud_tab(self,frame):
-        ttk.Label(frame, text="Opt-in encrypted metadata & workflow team sync",style="Heading.TLabel").pack(anchor="w", pady=8)
-        ttk.Label(frame, text="Requires self-hosted server (python main.py --hub). For Internet use, terminate HTTPS at a reverse proxy.\nNo browser sessions, cookies, proxy settings or credentials are uploaded.",style="Muted.TLabel").pack(anchor="w",pady=8)
+        ttk.Label(frame, text="Opt-in encrypted team sync and manual archive handoff",style="Heading.TLabel").pack(anchor="w", pady=8)
+        ttk.Label(frame, text="Requires self-hosted server (python main.py --hub), HTTPS for remote access.\n"
+                  "Metadata/workflows exclude sessions; sensitive encrypted .aglb session backup upload "
+                  "is OPTIONAL and must be explicitly confirmed. Never sync open browser state.",
+                  style="Muted.TLabel").pack(anchor="w",pady=8)
         self.cloud_fields={}
         for title,name,default,secret in (("Server URL","url","http://127.0.0.1:8899",False),
                     ("User","username","",False),("Password","password","",True),
@@ -1039,6 +1043,12 @@ class App:
                              ("Push workflow",lambda:self.cloud_sync("workflows","push")),
                              ("Pull workflow",lambda:self.cloud_sync("workflows","pull"))):
             ttk.Button(row,text=title,command=action).pack(side="left",padx=3)
+        archive_row=ttk.Frame(frame)
+        archive_row.pack(fill="x",pady=(5,8))
+        ttk.Button(archive_row,text="Upload encrypted session backup",
+                   command=self.cloud_upload_session).pack(side="left",padx=(0,9))
+        ttk.Button(archive_row,text="Download encrypted session backup",
+                   command=self.cloud_download_session).pack(side="left")
         self.cloud_status=tk.StringVar(value="Not signed in")
         ttk.Label(frame,textvariable=self.cloud_status).pack(anchor="w")
         ttk.Label(frame,text="Remote team roles: owner, admin, editor, viewer. Push uses revision checks to reject conflicts.",style="Muted.TLabel").pack(anchor="w",pady=8)
@@ -1051,6 +1061,75 @@ class App:
             else:
                 self.root.after(0,lambda:finished(result) if finished else self.cloud_status.set("Success"))
         threading.Thread(target=worker,daemon=True).start()
+
+    def cloud_upload_session(self):
+        if not self.cloud:
+            return messagebox.showinfo("Team sync","Log in first",parent=self.root)
+        source=filedialog.askopenfilename(title="Select an already encrypted .aglb backup",
+                   filetypes=[("Autumn encrypted backup","*.aglb")])
+        if not source:
+            return
+        team_id=self.cloud_fields["team_id"].get().strip()
+        passphrase=self.cloud_fields["passphrase"].get()
+        if len(passphrase)<12:
+            return messagebox.showerror("Session backup","Enter a strong shared TEAM encryption passphrase.",
+                                        parent=self.root)
+        if not messagebox.askyesno("Share SENSITIVE encrypted browser session",
+                "You are about to share an encrypted archive containing browser "
+                "cookies, saved sessions and local storage with authorized team members.\n\n"
+                "The archive is already password-encrypted and will be encrypted "
+                "again using the TEAM passphrase. Anyone with BOTH passphrases "
+                "and team access could restore the data.\n"
+                "Only upload a backup from a STOPPED profile. Continue?",
+                parent=self.root):
+            return
+        def task():
+            return CloudSessionHandoff(self.cloud).upload(team_id,Path(source),passphrase)
+        def finished(ident):
+            self.root.clipboard_clear()
+            self.root.clipboard_append(ident)
+            self.cloud_status.set("Encrypted archive handoff ID copied: "+ident)
+            messagebox.showinfo("Backup uploaded",
+                "Encrypted backup published to the team.\n"
+                "Handoff ID copied to clipboard; share it only with trusted team members.\n"
+                "This is a manual transfer, not active-profile cloud sync.",
+                parent=self.root)
+        self._cloud_action(task,finished)
+
+    def cloud_download_session(self):
+        if not self.cloud:
+            return messagebox.showinfo("Team sync","Log in first",parent=self.root)
+        ident=simpledialog.askstring("Encrypted session handoff",
+                 "Paste the 36-character archive transfer UUID:",parent=self.root)
+        if not ident:
+            return
+        dest=filedialog.asksaveasfilename(title="Save encrypted backup only",
+                defaultextension=".aglb",filetypes=[("Autumn encrypted backup","*.aglb")])
+        if not dest:
+            return
+        team_id=self.cloud_fields["team_id"].get().strip()
+        passphrase=self.cloud_fields["passphrase"].get()
+        if len(passphrase)<12:
+            return messagebox.showerror("Session backup","Enter the TEAM encryption passphrase.",
+                                        parent=self.root)
+        if not messagebox.askyesno("Download sensitive encrypted backup",
+                "Download this encrypted session backup to a NEW local file?\n"
+                "It will NOT be decrypted or automatically installed.\n"
+                "Restore manually through 'Restore backup' using the original "
+                "archive passphrase only after reviewing the file.",
+                parent=self.root):
+            return
+        def task():
+            return CloudSessionHandoff(self.cloud).download(
+                team_id,ident,Path(dest),passphrase)
+        def finished(size):
+            self.cloud_status.set(f"Encrypted backup downloaded ({size} bytes); not restored")
+            messagebox.showinfo("Encrypted archive downloaded",
+                "Only encrypted .aglb bytes were saved.\n"
+                "Use Restore backup separately with the original archive passphrase "
+                "to create a NEW local profile. No existing profile is overwritten.",
+                parent=self.root)
+        self._cloud_action(task,finished)
 
     def cloud_register(self):
         values={k:v.get() for k,v in self.cloud_fields.items()}
