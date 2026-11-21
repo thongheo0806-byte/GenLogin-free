@@ -1,0 +1,12 @@
+{
+  "format": "AutumnGenLogin/miniapp-1",
+  "name": "Inspect Example Heading",
+  "version": "1.0.0",
+  "category": "QA",
+  "description": "Read the public heading of a demonstration page; imports as an editable workflow draft.",
+  "workflow": [
+    {"action": "goto", "url": "https://example.com"},
+    {"action": "wait_for", "selector": "h1"},
+    {"action": "extract_text", "selector": "h1"}
+  ]
+}

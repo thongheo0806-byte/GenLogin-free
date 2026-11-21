@@ -20,6 +20,15 @@ class TkinterSmokeTests(unittest.TestCase):
                 self.assertEqual(len(app.builder.get_steps()), 4)
                 self.assertIsNotNone(app.extension_tree)
                 self.assertEqual(len(app.extensions.list()), 0)
+                self.assertIsNotNone(app.miniapp_tree)
+                self.assertEqual(len(app.miniapps.list()), 0)
+                record = app.miniapps.install({
+                    "format":"AutumnGenLogin/miniapp-1","name":"GUI smoke",
+                    "version":"1.0.0","description":"Synthetic workflow preview",
+                    "category":"QA",
+                    "workflow":[{"action":"wait_for","selector":"h1"}]})
+                app.refresh_miniapps()
+                self.assertEqual(app.miniapp_tree.get_children(), (record.id,))
                 app.refresh()
                 variable_graph={
                     "format":"AutumnGenLogin/graph-1",

@@ -7,6 +7,10 @@
 **Project status: v0.5 development baseline, updated 2026-11-20; incomplete feature parity.** This development branch includes a draggable node graph, recorder, opt-in encrypted team metadata hub, durable local scheduler, five engine adapters, shared Playwright driver and Windows regression tests. The release build is disabled; a passing test is not an approval to ship.
 
 
+## Local reviewed Miniapps catalog (development)
+
+The new **Miniapps** tab imports small declarative `AutumnGenLogin/miniapp-1` JSON packages from files you explicitly select. The application checks the exact manifest, validates every workflow step, rejects embedded code and pre-filled form values, stores a SHA-256-identified immutable copy in local SQLite and displays the required navigation origins. **Import never executes an action.** Preview and confirm **Load draft** to copy its steps into the editable Automation builder, then review and run separately. A sample is at [examples/miniapps/inspect-example-com.json](examples/miniapps/inspect-example-com.json). There is no remote store, signed publisher verification, package discovery or automatic updates. See [Miniapps security and scope](docs/MINIAPPS.md).
+
 ## Local QA live click mirroring (experimental)
 
 A new **Local QA sync** tab can mirror clicks of explicitly marked test buttons from one open master profile to 1-5 open follower profiles in the same group. All profiles must show the **same `http://127.0.0.1:port` origin**. This is a **localhost-only verification feature** for a user-controlled synthetic test page, not a general-purpose GenLogin synchronizer and not intended for real accounts. It never copies passwords, typed values, page URLs, cookies, keyboard input or browser fingerprints. Test pages must mark eligible buttons with `data-autumn-qa-click="1"` and a simple ID. See [local QA synchronizer](docs/LOCAL_QA_SYNCHRONIZER.md).

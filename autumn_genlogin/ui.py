@@ -14,6 +14,7 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 from .api import LocalAPI
 from .batch import BatchRunner
 from .qa_sync import LocalQASynchronizer
+from .miniapps import MiniAppLibrary
 from .profile_backup import export_encrypted_profile, restore_encrypted_profile
 from .browser_shared import SharedBrowserManager
 from .graph_ui import GraphEditor
@@ -131,6 +132,7 @@ class App:
         self.scheduler.start()
         self.batches = BatchRunner(self.store, self.manager)
         self.qa_sync = LocalQASynchronizer(self.manager)
+        self.miniapps = MiniAppLibrary(self.store)
         self.cloud = None
         self.cloud_revision = {"profiles": 0, "workflows": 0}
         self.extensions = self.manager.extensions
@@ -189,11 +191,12 @@ class App:
         ttk.Button(top, text="Restore backup", command=self.restore_profile).pack(side="right", padx=(10, 0))
         tabs = ttk.Notebook(page)
         tabs.pack(fill="both", expand=True)
-        profile_tab, flow_tab, batch_tab, qa_tab, extensions_tab, schedule_tab, cloud_tab, logs_tab = (ttk.Frame(tabs, padding=(0, 16)) for _ in range(8))
+        profile_tab, flow_tab, batch_tab, qa_tab, miniapps_tab, extensions_tab, schedule_tab, cloud_tab, logs_tab = (ttk.Frame(tabs, padding=(0, 16)) for _ in range(9))
         tabs.add(profile_tab, text="  Profiles  ")
         tabs.add(flow_tab, text="  Automation  ")
         tabs.add(batch_tab, text="  Batch tasks  ")
         tabs.add(qa_tab, text="  Local QA sync  ")
+        tabs.add(miniapps_tab, text="  Miniapps  ")
         tabs.add(extensions_tab, text="  Extensions  ")
         tabs.add(schedule_tab, text="  Scheduler  ")
         tabs.add(cloud_tab, text="  Team sync  ")
@@ -276,6 +279,7 @@ class App:
         self._build_schedule_tab(schedule_tab)
         self._build_batch_tab(batch_tab)
         self._build_qa_sync_tab(qa_tab)
+        self._build_miniapp_tab(miniapps_tab)
         self._build_cloud_tab(cloud_tab)
         ttk.Label(logs_tab, text="Session activity", style="Heading.TLabel").pack(anchor="w", pady=(0, 14))
         self.log_widget = tk.Text(logs_tab, font=("Cascadia Code", 10), bg=PANEL, fg=FG, insertbackground=FG, relief="flat", state="disabled", padx=15, pady=15)
@@ -647,6 +651,121 @@ class App:
             self.notice(f"Imported {len(steps)} reviewed structural steps; verify placeholders before replay")
         except (TypeError, ValueError) as exc:
             messagebox.showerror("Recorder", str(exc), parent=self.root)
+
+    def _build_miniapp_tab(self, frame):
+        ttk.Label(frame,text="Reviewed local Miniapps (JSON workflows, never executable packages)",
+                  style="Heading.TLabel").pack(anchor="w",pady=(0,8))
+        ttk.Label(frame,text="Import from a trusted JSON file, preview origin permissions and actions, "
+                  "then load an EDITABLE draft into Automation.\n"
+                  "No downloads, cloud marketplace, code execution or automatic runs.",
+                  style="Muted.TLabel").pack(anchor="w",pady=(0,14))
+        actions=ttk.Frame(frame)
+        actions.pack(fill="x",pady=(0,10))
+        for title,command in (("Import JSON",self.import_miniapp),
+                              ("Preview",self.preview_miniapp),
+                              ("Load draft",self.load_miniapp),
+                              ("Remove",self.remove_miniapp)):
+            ttk.Button(actions,text=title,command=command).pack(side="left",padx=(0,8))
+        self.miniapp_tree=ttk.Treeview(frame,
+                columns=("name","version","category","steps","origins"),
+                show="headings",selectmode="browse")
+        for key,title,width in (("name","Miniapp",220),("version","Version",85),
+                                ("category","Category",125),("steps","Steps",70),
+                                ("origins","Navigation origins",410)):
+            self.miniapp_tree.heading(key,text=title)
+            self.miniapp_tree.column(key,width=width,stretch=key in {"name","origins"})
+        self.miniapp_tree.pack(fill="both",expand=True)
+        self.miniapp_tree.bind("<Double-1>",lambda *_:self.preview_miniapp())
+        self.refresh_miniapps()
+
+    def refresh_miniapps(self):
+        if not hasattr(self,"miniapp_tree"):
+            return
+        self.miniapp_tree.delete(*self.miniapp_tree.get_children())
+        for record in self.miniapps.list():
+            self.miniapp_tree.insert("","end",iid=record.id,
+                values=(record.name,record.version,record.category,
+                        record.steps,", ".join(record.origins) or "(current page)"))
+
+    def selected_miniapp(self):
+        selection=self.miniapp_tree.selection()
+        if not selection:
+            messagebox.showinfo("Miniapps","Select an installed miniapp first.",parent=self.root)
+            return None
+        return selection[0]
+
+    def import_miniapp(self):
+        path=filedialog.askopenfilename(title="Import local reviewed miniapp",
+                       filetypes=[("Miniapp JSON","*.json")])
+        if not path:
+            return
+        if not messagebox.askyesno("Untrusted workflow warning",
+                "Only import JSON miniapps from trusted sources. Imported steps "
+                "may navigate or click webpages after you explicitly load and run them.\n"
+                "No code or script will be executed on import. Continue?",
+                parent=self.root):
+            return
+        try:
+            record=self.miniapps.install_json(Path(path))
+            self.refresh_miniapps()
+            self.notice(f"Imported local miniapp: {record.name} v{record.version}")
+        except Exception as exc:
+            messagebox.showerror("Miniapp import",str(exc),parent=self.root)
+
+    def preview_miniapp(self):
+        ident=self.selected_miniapp()
+        if not ident:
+            return
+        try:
+            doc=self.miniapps.get(ident)
+            origins=sorted({s["url"].split("/",3)[0]+"//"+s["url"].split("/",3)[2]
+                            for s in doc["workflow"] if s["action"]=="goto"})
+            actions=", ".join(x["action"] for x in doc["workflow"])
+            messagebox.showinfo("Miniapp preview",
+                f"{doc['name']} v{doc['version']} ({doc['category']})\n"
+                f"{doc['description']}\n\n"
+                f"Navigation origins: {', '.join(origins) or '(current page)'}\n"
+                f"Steps: {len(doc['workflow'])}\nActions: {actions[:750]}\n\n"
+                "The miniapp will never run automatically.",
+                parent=self.root)
+        except Exception as exc:
+            messagebox.showerror("Miniapp preview",str(exc),parent=self.root)
+
+    def load_miniapp(self):
+        ident=self.selected_miniapp()
+        if not ident:
+            return
+        try:
+            record=self.miniapps._record(ident)
+            preview=", ".join(record.origins) or "(currently open webpage)"
+            if not messagebox.askyesno("Load miniapp draft",
+                 f"Load '{record.name}' v{record.version} as a new editable workflow draft?\n\n"
+                 f"Navigation origins: {preview}\nSteps: {record.steps}\n\n"
+                 "Review clicks, input placeholders and page permissions before running. "
+                 "Your current workflow editor contents will be replaced.",
+                 parent=self.root):
+                return
+            doc=self.miniapps.get(ident)
+            self.builder.set_steps(doc["workflow"])
+            self.flow_tabs.select(0)
+            self.notice(f"Loaded miniapp draft: {record.name}; not executed")
+        except Exception as exc:
+            messagebox.showerror("Miniapp load",str(exc),parent=self.root)
+
+    def remove_miniapp(self):
+        ident=self.selected_miniapp()
+        if not ident:
+            return
+        try:
+            record=self.miniapps._record(ident)
+            if messagebox.askyesno("Remove miniapp",
+                    f"Remove local template '{record.name}' v{record.version}? "
+                    "Existing exported workflow files are unaffected.",parent=self.root):
+                self.miniapps.remove(ident)
+                self.refresh_miniapps()
+                self.notice("Local miniapp template removed")
+        except Exception as exc:
+            messagebox.showerror("Remove miniapp",str(exc),parent=self.root)
 
     def _build_qa_sync_tab(self, frame):
         ttk.Label(frame,text="Local test-only click synchronizer",
