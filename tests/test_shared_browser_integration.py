@@ -25,7 +25,7 @@ class Fixture(BaseHTTPRequestHandler):
         data=(b'<html><body><h1 id="title">Autumn test</h1>'
               b'<input id="secret" value="" />'
               b'<select id="category"><option value="">none</option><option value="sensitive-unique-option">sensitive</option></select>'
-              b'<button id="press">Push</button>'
+              b'<button id="press" data-autumn-qa-click="1">Push</button>'
               b'<script>document.querySelector("#press").onclick=()=>{document.body.dataset.clicked="yes"}</script>'
               b'</body></html>')
         self.send_response(200)
@@ -194,6 +194,49 @@ class SharedBrowserRealTests(unittest.TestCase):
         self.assertEqual(result["extracted"],[])
         self.assertNotIn("Autumn test",str(list(self.manager.events.queue)))
         self.manager.stop(profile.id)
+
+    def test_local_only_live_mirror_clicks_across_three_open_chromium_profiles(self):
+        """One real master click propagates to two isolated synthetic QA pages."""
+        from autumn_genlogin.qa_sync import LocalQASynchronizer
+        profiles=[self.store.save(Profile(name=f"qa-mirror-{i}",browser="chromium",
+                                          group_name="QA",start_url=self.origin))
+                  for i in range(3)]
+        for profile in profiles:
+            self.manager.start(profile.id)
+        self.assertTrue(eventually(lambda:all(
+            (s:=self.manager._sessions.get(profile.id)) is not None and
+            s.ready.is_set() and s.context is not None
+            for profile in profiles),timeout=30))
+        mirror=LocalQASynchronizer(self.manager)
+        start=mirror.start(profiles[0].id,[p.id for p in profiles[1:]])
+        self.assertTrue(start["active"])
+        self.assertEqual(start["origin"],self.origin)
+        async def master_click():
+            page=self.manager._sessions[profiles[0].id].context.pages[0]
+            await page.locator("#press").click()
+        self.manager._submit(master_click()).result(timeout=15)
+        async def all_followers_clicked():
+            results=[]
+            for profile in profiles[1:]:
+                page=self.manager._sessions[profile.id].context.pages[0]
+                results.append(await page.evaluate("document.body.dataset.clicked==='yes'"))
+            return all(results)
+        self.assertTrue(eventually(lambda:self.manager._submit(
+            all_followers_clicked()).result(timeout=8),timeout=20),
+            "Master click did not propagate to both independent QA profiles")
+        self.assertEqual(mirror.status()["mirrored_clicks"],2)
+        mirror.stop()
+        self.assertFalse(mirror.status()["active"])
+        async def reset_followers():
+            for profile in profiles[1:]:
+                page=self.manager._sessions[profile.id].context.pages[0]
+                await page.evaluate("delete document.body.dataset.clicked")
+        self.manager._submit(reset_followers()).result(timeout=15)
+        self.manager._submit(master_click()).result(timeout=15)
+        self.assertFalse(self.manager._submit(all_followers_clicked()).result(timeout=15),
+                         "Stopping QA sync must disable further mirroring")
+        for profile in profiles:
+            self.manager.stop(profile.id)
 
     def test_real_chromium_click_by_opt_in_local_image_template(self):
         """Playwright CSS screenshot -> local OpenCV match -> real mouse click."""
