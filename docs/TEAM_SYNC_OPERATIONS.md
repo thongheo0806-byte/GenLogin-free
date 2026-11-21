@@ -1,6 +1,6 @@
 # Optional encrypted team metadata sync (self-hosted)
 
-AutumnGenLogin has no mandatory account or telemetry. Synchronization is **off by default** and does not upload browsing session data.
+AutumnGenLogin has no mandatory account or telemetry. Synchronization is **off by default**. The regular metadata/workflow sync excludes browser session data; a separate, explicitly confirmed **manual encrypted `.aglb` backup handoff** can now transfer sensitive encrypted archives within strict size/role limits. See [manual session handoff](CLOUD_SESSION_HANDOFF.md). This is not automatic cloud session sync.
 
 ## Development local test
 
@@ -23,3 +23,7 @@ AutumnGenLogin has no mandatory account or telemetry. Synchronization is **off b
 ## Explicit limitations
 
 This is a **self-hosted opt-in metadata collaboration service**, not a preconfigured hosted cloud platform. Push/pull is manual and not guaranteed available offline. No GenLogin cloud API compatibility, live session mirroring, automatic conflict merges, sync between browser-data directories or enterprise audit/compliance is claimed.
+
+## Opt-in manual encrypted archive handoff (development)
+
+The Team sync tab now includes explicit **Upload encrypted session backup** and **Download encrypted session backup** actions. These are separate from the metadata/workflows sync contract above: archive transfers are encrypted twice, uploaded in bounded 256 KiB chunks with an immutable final manifest and downloaded only to a new encrypted file. Team owners/editors may upload, viewers may download. Do not claim that the regular profile-metadata document now includes cookie/session data; it still strictly excludes that material. No automatic session transfer or remote browser folder synchronization exists. Review [CLOUD_SESSION_HANDOFF.md](CLOUD_SESSION_HANDOFF.md) before using sensitive data.

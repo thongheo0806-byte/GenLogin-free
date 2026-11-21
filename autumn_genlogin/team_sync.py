@@ -11,6 +11,7 @@ import hashlib
 import hmac
 import json
 import secrets
+import re
 import sqlite3
 import threading
 import time
@@ -25,6 +26,17 @@ from uuid import uuid4
 FORMAT = "AutumnGenLogin/encrypted-1"
 MAX_DOCUMENT = 1024 * 1024
 ROLE_LEVEL = {"viewer":0, "editor":1,"admin":2,"owner":3}
+# Whitelist immutable, opaque session-archive parts and the final manifest.
+# No arbitrary document names, paths, query strings or token-like values.
+_SESSION_NAME = re.compile(
+    r"session-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-(?:[0-9]{2}|manifest)\Z"
+)
+
+
+def _allowed_document_name(name: str) -> bool:
+    return name in {"profiles","workflows"} or (
+        isinstance(name,str) and bool(_SESSION_NAME.fullmatch(name))
+    )
 
 
 def _b64(v:bytes) -> str:
@@ -185,7 +197,7 @@ class TeamHub:
 
     def read_document(self,actor:str,team_id:str,name:str)->dict:
         self.require(actor,team_id)
-        if name not in {"profiles","workflows"}: raise HubError(400,"Invalid document type")
+        if not _allowed_document_name(name): raise HubError(400,"Invalid document type")
         with closing(self._db()) as c:
             row=c.execute("SELECT revision,blob FROM documents WHERE team_id=? AND name=?",(team_id,name)).fetchone()
         if not row: return {"revision":0,"blob":None}
@@ -193,7 +205,7 @@ class TeamHub:
 
     def write_document(self,actor:str,team_id:str,name:str,revision:int,blob:dict)->int:
         self.require(actor,team_id,"editor")
-        if name not in {"profiles","workflows"}: raise HubError(400,"Invalid document type")
+        if not _allowed_document_name(name): raise HubError(400,"Invalid document type")
         if type(revision) is not int or revision<0: raise HubError(400,"Invalid revision")
         if not isinstance(blob,dict) or blob.get("format")!=FORMAT:
             raise HubError(400,"Only encrypted documents are accepted")
@@ -206,6 +218,16 @@ class TeamHub:
                 row=c.execute("SELECT revision FROM documents WHERE team_id=? AND name=?",(team_id,name)).fetchone()
                 actual=row["revision"] if row else 0
                 if actual != revision: raise HubError(409,"Revision conflict; pull before overwriting")
+                # Session parts/manifests are immutable; a writer cannot
+                # rewrite an already-published encrypted backup.
+                if name.startswith("session-") and row is not None:
+                    raise HubError(409,"Published session archive documents are immutable")
+                if name.startswith("session-"):
+                    count=c.execute(
+                        "SELECT COUNT(*) FROM documents WHERE team_id=? AND name LIKE 'session-%'",
+                        (team_id,)).fetchone()[0]
+                    if count>=2048:
+                        raise HubError(413,"Team archive storage quota exceeded")
                 c.execute("INSERT INTO documents VALUES(?,?,?,?) ON CONFLICT(team_id,name) DO UPDATE SET revision=excluded.revision,blob=excluded.blob",
                           (team_id,name,actual+1,raw))
                 c.commit()
