@@ -4,6 +4,8 @@ name: autumngenlogin-ai-lab
 services:
   ollama:
     image: ${AUTUMN_LAB_OLLAMA_IMAGE:?Choose and review an exact Ollama image version}
+    environment:
+      OLLAMA_HOST: "0.0.0.0:11434"
     read_only: true
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
