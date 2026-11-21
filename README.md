@@ -7,6 +7,10 @@
 **Project status: v0.5 development baseline, updated 2026-11-20; incomplete feature parity.** This development branch includes a draggable node graph, recorder, opt-in encrypted team metadata hub, durable local scheduler, five engine adapters, shared Playwright driver and Windows regression tests. The release build is disabled; a passing test is not an approval to ship.
 
 
+## Local QA live click mirroring (experimental)
+
+A new **Local QA sync** tab can mirror clicks of explicitly marked test buttons from one open master profile to 1-5 open follower profiles in the same group. All profiles must show the **same `http://127.0.0.1:port` origin**. This is a **localhost-only verification feature** for a user-controlled synthetic test page, not a general-purpose GenLogin synchronizer and not intended for real accounts. It never copies passwords, typed values, page URLs, cookies, keyboard input or browser fingerprints. Test pages must mark eligible buttons with `data-autumn-qa-click="1"` and a simple ID. See [local QA synchronizer](docs/LOCAL_QA_SYNCHRONIZER.md).
+
 ## Experimental isolated browser-use AI lab (NOT a product feature)
 
 The `experiments/browser_use_lab/` project contains a **separate, opt-in research experiment** using exactly pinned `browser-use==1.0.7` and an operator-prepared local Ollama model. The model-generated agent may execute Python, so there is **no safe direct integration with user profile data**. The lab operates only on its own synthetic localhost test page inside a restricted Docker Compose internal network with no application data mounts, no host ports, telemetry disabled and a new temporary browser. CI validates the security policy and Compose configuration only; it **does not claim a successful real LLM inference run**.
