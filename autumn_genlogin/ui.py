@@ -609,7 +609,7 @@ class App:
         if pid:
             try:
                 self.manager.start_recording(pid)
-                self.notice("Recording clicks and form selectors. Input contents are NEVER captured.")
+                self.notice("Recorder active for selected browser only; input values and page URLs are never captured.")
             except Exception as exc:
                 messagebox.showerror("Recorder", str(exc), parent=self.root)
 
@@ -627,9 +627,20 @@ class App:
             messagebox.showinfo("Recorder", "No actions recorded. Open a profile and click Record first.", parent=self.root)
             return
         try:
+            report = self.manager.recording_review(pid)
+            if not report:
+                raise ValueError("No browser recording available")
+            warnings = "\n".join("• " + line for line in report["warnings"])
+            details = (f"Actions: {report['step_count']}\n"
+                       f"Redacted form fields: {report['redacted_fields']}\n"
+                       f"Observed page loads (no URLs retained): {report['navigation_boundaries']}\n\n"
+                       + warnings + "\n\nImport as an EDITABLE draft?")
+            if not messagebox.askyesno("Review recorded actions before replay",
+                                       details, parent=self.root):
+                return
             self.builder.set_steps(steps)
             self.flow_tabs.select(0)
-            self.notice(f"Imported {len(steps)} recorded steps; all input values are blank for safety")
+            self.notice(f"Imported {len(steps)} reviewed structural steps; verify placeholders before replay")
         except (TypeError, ValueError) as exc:
             messagebox.showerror("Recorder", str(exc), parent=self.root)
 
