@@ -141,12 +141,17 @@ class CloudSessionHandoff:
             raise ValueError("Remote object is not a valid encrypted backup container")
         # Store only still-encrypted .aglb bytes; never decrypt or auto-import.
         # 'xb' reserves a brand-new path, preventing accidental overwrite.
+        created = False
         try:
             with target.open("xb") as destination:
+                created = True
                 destination.write(result)
                 destination.flush()
                 os.fsync(destination.fileno())
         except BaseException:
-            target.unlink(missing_ok=True)
+            # Never unlink a file if exclusive creation itself failed;
+            # another process may own that path.
+            if created:
+                target.unlink(missing_ok=True)
             raise
         return len(result)
