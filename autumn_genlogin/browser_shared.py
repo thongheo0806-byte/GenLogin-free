@@ -22,6 +22,7 @@ from .image_actions import ImageTemplateLibrary, find_image_center
 from .graph import execute_graph, validate_graph
 from .locks import ProfileLease
 from .models import validated_steps, valid_http_url
+from .recording import append_recorded_event, review_recording
 from .secrets import get_password
 
 RECORD_SCRIPT = r"""(() => {
@@ -52,8 +53,14 @@ RECORD_SCRIPT = r"""(() => {
     if (window.__autumnRecord) window.__autumnRecord(event).catch(() => {});
   }
   document.addEventListener('click', function(ev) {
-    const el=ev.target && ev.target.closest('button,a,input[type=button],input[type=submit]');
+    const el=ev.target && ev.target.closest('button,a,input[type=button],input[type=submit],[role=button]');
     if (el) { const s=selector(el); if (s) send({action:'click',selector:s}); }
+  }, true);
+  // Capture only structural browser actions. Never read input values or page URL.
+  document.addEventListener('keydown', function(ev) {
+    if (ev.key !== 'Escape' || !ev.target || !ev.target.closest) return;
+    const el=ev.target.closest('button,a,[role=button]');
+    if (el) { const s=selector(el); if (s) send({action:'press',selector:s,key:'Escape'}); }
   }, true);
   document.addEventListener('change', function(ev) {
     const el=ev.target;
@@ -81,6 +88,9 @@ class Session:
     recording: bool = False
     recorded: list[dict] = field(default_factory=list)
     binding_added: bool = False
+    recorded_navigation_count: int = 0
+    recorder_page_observers: set[int] = field(default_factory=set)
+    recorder_page_hooked: bool = False
 
 
 class SharedBrowserManager:
@@ -458,15 +468,42 @@ class SharedBrowserManager:
     async def _install_recorder(self,session):
         await session.ready.wait()
         if not session.context or session.closed.is_set(): return
-        session.recorded=[]
-        session.recording=True
+        with self._lock:
+            session.recorded=[]
+            session.recorded_navigation_count=0
+            session.recording=True
+        if not session.recorder_page_hooked:
+            def observe_page(page):
+                identity = id(page)
+                if identity in session.recorder_page_observers:
+                    return
+                session.recorder_page_observers.add(identity)
+                def count_navigation():
+                    if session.recording:
+                        with self._lock:
+                            session.recorded_navigation_count = min(
+                                session.recorded_navigation_count + 1, 1000)
+                page.on("domcontentloaded", lambda *_: count_navigation())
+                page.on("close", lambda *_: session.recorder_page_observers.discard(identity))
+            session.context.on("page", observe_page)
+            for existing_page in session.context.pages:
+                observe_page(existing_page)
+            session.recorder_page_hooked=True
         if not session.binding_added:
             async def binding(source,payload):
-                if not session.recording or len(session.recorded)>=100 or not isinstance(payload,dict):return
-                try:record=validated_steps([payload])[0]
-                except (ValueError,TypeError):return
-                session.recorded.append(record)
-                self.events.put((session.profile.id,"recorded",record["action"]))
+                if not session.recording:
+                    return
+                # Only main-frame CSS selectors currently replay correctly.
+                # Reject iframes instead of later pretending that a selector
+                # from a nested browsing context can be used on the top page.
+                frame, page = source.get("frame"), source.get("page")
+                if frame is None or page is None or frame != page.main_frame:
+                    return
+                with self._lock:
+                    if not append_recorded_event(session.recorded,payload):
+                        return
+                    action=session.recorded[-1]["action"]
+                self.events.put((session.profile.id,"recorded",action))
             await session.context.expose_binding("__autumnRecord",binding)
             session.binding_added=True
         await session.context.add_init_script(RECORD_SCRIPT)
@@ -483,7 +520,15 @@ class SharedBrowserManager:
     def recorded_steps(self,pid):
         with self._lock:
             session=self._sessions.get(pid)
-            return deepcopy(session.recorded) if session else []
+            return review_recording(session.recorded).steps if session else []
+
+    def recording_review(self,pid):
+        with self._lock:
+            session=self._sessions.get(pid)
+            if not session:
+                return None
+            return review_recording(session.recorded,
+                                    navigation_boundaries=session.recorded_navigation_count).public_summary()
 
     @staticmethod
     def _error(exc,secret):
