@@ -13,6 +13,7 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 
 from .api import LocalAPI
 from .batch import BatchRunner
+from .qa_sync import LocalQASynchronizer
 from .profile_backup import export_encrypted_profile, restore_encrypted_profile
 from .browser_shared import SharedBrowserManager
 from .graph_ui import GraphEditor
@@ -129,6 +130,7 @@ class App:
                                    dispatch_job=self._dispatch_scheduled_job)
         self.scheduler.start()
         self.batches = BatchRunner(self.store, self.manager)
+        self.qa_sync = LocalQASynchronizer(self.manager)
         self.cloud = None
         self.cloud_revision = {"profiles": 0, "workflows": 0}
         self.extensions = self.manager.extensions
@@ -187,10 +189,11 @@ class App:
         ttk.Button(top, text="Restore backup", command=self.restore_profile).pack(side="right", padx=(10, 0))
         tabs = ttk.Notebook(page)
         tabs.pack(fill="both", expand=True)
-        profile_tab, flow_tab, batch_tab, extensions_tab, schedule_tab, cloud_tab, logs_tab = (ttk.Frame(tabs, padding=(0, 16)) for _ in range(7))
+        profile_tab, flow_tab, batch_tab, qa_tab, extensions_tab, schedule_tab, cloud_tab, logs_tab = (ttk.Frame(tabs, padding=(0, 16)) for _ in range(8))
         tabs.add(profile_tab, text="  Profiles  ")
         tabs.add(flow_tab, text="  Automation  ")
         tabs.add(batch_tab, text="  Batch tasks  ")
+        tabs.add(qa_tab, text="  Local QA sync  ")
         tabs.add(extensions_tab, text="  Extensions  ")
         tabs.add(schedule_tab, text="  Scheduler  ")
         tabs.add(cloud_tab, text="  Team sync  ")
@@ -272,6 +275,7 @@ class App:
         self.refresh_extensions()
         self._build_schedule_tab(schedule_tab)
         self._build_batch_tab(batch_tab)
+        self._build_qa_sync_tab(qa_tab)
         self._build_cloud_tab(cloud_tab)
         ttk.Label(logs_tab, text="Session activity", style="Heading.TLabel").pack(anchor="w", pady=(0, 14))
         self.log_widget = tk.Text(logs_tab, font=("Cascadia Code", 10), bg=PANEL, fg=FG, insertbackground=FG, relief="flat", state="disabled", padx=15, pady=15)
@@ -643,6 +647,71 @@ class App:
             self.notice(f"Imported {len(steps)} reviewed structural steps; verify placeholders before replay")
         except (TypeError, ValueError) as exc:
             messagebox.showerror("Recorder", str(exc), parent=self.root)
+
+    def _build_qa_sync_tab(self, frame):
+        ttk.Label(frame,text="Local test-only click synchronizer",
+                  style="Heading.TLabel").pack(anchor="w",pady=(0,8))
+        ttk.Label(frame,text="Experimental local QA: clicks on specially marked "
+                  "buttons are mirrored from one open master profile to up to five "
+                  "open follower profiles in the same group.\n"
+                  "Only the SAME http://127.0.0.1:port test origin is allowed. "
+                  "No logins, real websites, field values, cookies or keyboard copying.",
+                  style="Muted.TLabel").pack(anchor="w",pady=(0,14))
+        row=ttk.Frame(frame)
+        row.pack(fill="x",pady=(0,10))
+        ttk.Button(row,text="Start local QA click sync",style="Accent.TButton",
+                   command=self.start_qa_sync).pack(side="left",padx=(0,10))
+        ttk.Button(row,text="Stop QA sync",command=self.stop_qa_sync).pack(side="left",padx=(0,10))
+        ttk.Button(row,text="Refresh sync status",command=self.refresh_qa_sync).pack(side="left")
+        self.qa_sync_label=tk.StringVar(value="QA sync is OFF")
+        ttk.Label(frame,textvariable=self.qa_sync_label).pack(anchor="w",pady=12)
+
+    def start_qa_sync(self):
+        pid=self.selected_id()
+        if not pid:
+            return
+        try:
+            if not self.manager.active(pid):
+                raise ValueError("Open the master QA profile first")
+            master=self.store.get(pid)
+            followers=[p.id for p in self.store.all()
+                       if p.group_name==master.group_name and p.id!=pid
+                       and self.manager.active(p.id)]
+            if not 1 <= len(followers) <= 5:
+                raise ValueError("Open 1-5 other QA profiles in the same group first")
+            if not messagebox.askyesno("Enable LOCAL QA mirror",
+                    f"Mirror marked-button clicks from {master.name} to "
+                    f"{len(followers)} other open QA profiles?\n\n"
+                    "All pages must be on the SAME local test origin "
+                    "(http://127.0.0.1:port).\n"
+                    "No website logins, personal accounts or passwords. Continue?",
+                    parent=self.root):
+                return
+            state=self.qa_sync.start(pid,followers)
+            self.qa_sync_label.set(f"QA sync on: {len(followers)} followers at {state['origin']}")
+            self.notice("Experimental local QA click sync started")
+        except Exception as exc:
+            messagebox.showerror("QA synchronizer",str(exc),parent=self.root)
+
+    def stop_qa_sync(self):
+        try:
+            result=self.qa_sync.stop()
+            self.qa_sync_label.set("QA sync is OFF")
+            self.notice("QA click sync stopped")
+        except Exception as exc:
+            messagebox.showerror("QA synchronizer",str(exc),parent=self.root)
+
+    def refresh_qa_sync(self):
+        try:
+            state=self.qa_sync.status()
+            if not state["active"]:
+                self.qa_sync_label.set("QA sync is OFF")
+            else:
+                self.qa_sync_label.set(
+                    f"QA sync: {state['mirrored_clicks']} clicks mirrored, "
+                    f"{state['failed_clicks']} failed; local origin {state['origin']}")
+        except Exception as exc:
+            messagebox.showerror("QA synchronizer",str(exc),parent=self.root)
 
     def _build_batch_tab(self, frame):
         ttk.Label(frame, text="Run the current workflow across a selected profile group",
