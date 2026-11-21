@@ -2,7 +2,7 @@
 # No host ports, no shared application data directories, no external route.
 name: autumngenlogin-ai-lab
 services:
-  local-model:
+  ollama:
     image: ${AUTUMN_LAB_OLLAMA_IMAGE:?Choose and review an exact Ollama image version}
     read_only: true
     cap_drop: [ALL]
@@ -20,7 +20,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    depends_on: [local-model]
+    depends_on: [ollama]
     environment:
       AUTUMN_AI_LAB_ISOLATED: "1"
       AUTUMN_LAB_MODEL: ${AUTUMN_LAB_MODEL:?Choose a model already provisioned locally}
