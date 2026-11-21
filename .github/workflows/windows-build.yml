@@ -27,6 +27,25 @@ jobs:
         env:
           AUTUMN_GUI_SMOKE: '1'
         run: python -m unittest discover -s tests -p "test_gui_smoke.py" -v
+  # Real Win32 GUI window control (not merely a withdrawn Tk structure smoke).
+  # Hosted runners may have restricted input desktops; this lane tests OS
+  # window visibility and state only, not screen-reader or mouse acceptance.
+  windows-pywinauto-smoke:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install runtime and Windows-only pywinauto QA
+        run: |
+          python -m pip install -r requirements.txt
+          python -m pip install "pywinauto>=0.6.9,<0.7"
+      - name: Inspect real AutumnGenLogin GUI with Win32 automation
+        env:
+          AUTUMN_PYWINAUTO_SMOKE: '1'
+        run: python -m unittest discover -s tests -p "test_windows_pywinauto.py" -v
+
   upgrade-existing-venv:
     runs-on: windows-latest
     steps:
