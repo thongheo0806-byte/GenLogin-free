@@ -29,7 +29,7 @@ ROLE_LEVEL = {"viewer":0, "editor":1,"admin":2,"owner":3}
 # Whitelist immutable, opaque session-archive parts and the final manifest.
 # No arbitrary document names, paths, query strings or token-like values.
 _SESSION_NAME = re.compile(
-    r"session-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-(?:[0-9]{2}|manifest)\\Z"
+    r"session-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-(?:[0-9]{2}|manifest)\Z"
 )
 
 
