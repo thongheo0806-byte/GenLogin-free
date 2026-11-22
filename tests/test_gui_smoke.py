@@ -29,6 +29,16 @@ class TkinterSmokeTests(unittest.TestCase):
                     "workflow":[{"action":"wait_for","selector":"h1"}]})
                 app.refresh_miniapps()
                 self.assertEqual(app.miniapp_tree.get_children(), (record.id,))
+                # The user must have an explicit UI path to resume a failed
+                # encrypted archive rather than automatically replay uploads.
+                from tkinter import ttk
+                def descendants(node):
+                    for child in node.winfo_children():
+                        yield child
+                        yield from descendants(child)
+                buttons=[w.cget("text") for w in descendants(root)
+                         if isinstance(w,ttk.Button)]
+                self.assertIn("Resume interrupted encrypted backup upload",buttons)
                 app.refresh()
                 variable_graph={
                     "format":"AutumnGenLogin/graph-1",
