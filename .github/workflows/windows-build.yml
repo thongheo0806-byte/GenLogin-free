@@ -149,3 +149,30 @@ jobs:
         run: |
           docker compose -f experiments/browser_use_lab/compose.yaml config --format json |
             python -m experiments.browser_use_lab.check_compose
+
+  # An unverified proprietary-browser evidence form cannot unlock builds.
+  titan-evidence-hold:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Evidence template explicitly refuses parity/release
+        shell: pwsh
+        run: |
+          python -m unittest discover -s tests -p "test_titan_evidence.py" -v
+          if ($LASTEXITCODE -ne 0) { throw "Titan evidence validator regression" }
+          python -m autumn_genlogin.titan_evidence examples/titan/reference-evidence-template.json
+          if ($LASTEXITCODE -ne 1) { throw "Missing Titan evidence must exit 1 (release HOLD)" }
+          @'
+          import json
+          from pathlib import Path
+          from autumn_genlogin.titan_evidence import inspect_file
+          result = inspect_file(Path("examples/titan/reference-evidence-template.json"))
+          assert result["state"] == "blocked"
+          assert result["can_build_exe"] is False
+          assert result["can_claim_titan_parity"] is False
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { throw "Titan parity hold missing" }
+# Explicit user instruction: NO EXE artifact, even if all CI lanes pass.

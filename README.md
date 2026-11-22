@@ -7,6 +7,10 @@
 **Project status: v0.5 development baseline, updated 2026-11-20; incomplete feature parity.** This development branch includes a draggable node graph, recorder, opt-in encrypted team metadata hub, durable local scheduler, five engine adapters, shared Playwright driver and Windows regression tests. The release build is disabled; a passing test is not an approval to ship.
 
 
+## Titan / GenLogin parity verification: evidence HOLD
+
+A non-invasive JSON evidence readiness checker now blocks any assertion of Titan equivalence without a pinned, legally observed GenLogin/Titan baseline, reference/Autumn test artifacts and outside reviewer sign-off. Run `python -m autumn_genlogin.titan_evidence examples/titan/reference-evidence-template.json`; its default result remains **blocked**, and it cannot authorize an EXE even with all self-reported cases marked pass. See [Titan comparison protocol](docs/TITAN_VERIFICATION_PROTOCOL.md). The actual proprietary engine has not been inspected or reproduced.
+
 ## Manual encrypted cloud session handoff (development)
 
 The Team Sync tab can now manually transfer an **already encrypted** `.aglb` browser profile backup to a permitted team member through the self-hosted TeamHub. Select **Upload encrypted session backup** (owner/editor role), then share the generated transfer UUID. The recipient selects **Download encrypted session backup** (viewer role or above) and saves the original encrypted bytes to a **new local file**. Restoring remains a separate explicit **Restore backup** action requiring the original archive passphrase; it creates a new profile and never overwrites an existing one. The server holds only AES-GCM ciphertext inside encrypted, revision-checked, immutable documents, and the upload/download requires a separate shared team passphrase. Maximum 16 MiB per archive and 64 parts; no automatic session sync, background replay, live credential syncing or production cloud availability is claimed. See [manual session handoff](docs/CLOUD_SESSION_HANDOFF.md).
