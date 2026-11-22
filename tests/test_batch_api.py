@@ -43,6 +43,11 @@ class APIBatchTests(unittest.TestCase):
 
     def tearDown(self):
         self.api.stop()
+        self.batch.cancel_all()
+        for ident in tuple(self.batch._threads):
+            self.assertTrue(self.batch.wait(ident,timeout=10),
+                            "API batch worker retained a SQLite handle on Windows")
+        self.store.close_thread_connection()
         self.tmp.cleanup()
 
     def request(self,path,body=None,auth=True):
