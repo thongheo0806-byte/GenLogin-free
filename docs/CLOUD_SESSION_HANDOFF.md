@@ -73,3 +73,26 @@ malicious extensions can defeat confidentiality.
 
 Use the opt-in local self-hosted service only for synthetic profile test
 data until production security and disaster recovery gates are satisfied.
+
+## 2026-11-22 manual Hub archive revocation
+
+The Team Sync tab now offers **Revoke team archive**. An authenticated
+team **owner or admin** can enter a 36-character handoff UUID and explicitly
+confirm permanent removal of that archive's encrypted chunks and
+manifest from the self-hosted TeamHub. Editors and viewers are denied.
+
+Revocation is one SQLite `BEGIN IMMEDIATE` transaction: it stores a
+permanent `revoked_sessions` tombstone and deletes all ciphertext
+documents under that UUID. The same transaction prevents races with
+concurrent chunk publishers, and subsequent attempts to read or
+republish any chunk/manifest using the old ID return HTTP 410. A
+repeated revoke is idempotent and removes zero additional documents.
+The tombstone contains only the team UUID, handoff UUID and timestamp,
+not cookie data, URLs or passphrases.
+
+**Critical limit:** any encrypted backup already downloaded to a
+recipient's computer remains in their possession. Server-side
+revocation cannot delete those copies, log out their accounts, invalidate
+website cookies or revoke the underlying browser sessions. Invalidate
+sessions at the **original services** if account access is compromised.
+This is server-storage access control, not complete cloud session sync.
