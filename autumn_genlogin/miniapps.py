@@ -269,6 +269,10 @@ class MiniAppLibrary:
 
     def get(self, ident: str) -> dict:
         record=self._record(ident)
+        # Even direct callers must not bypass local key revocation.
+        # Unsigned legacy drafts still require separate human UI review.
+        if record.signature_status=="untrusted":
+            raise ValueError("Signed Miniapp key is no longer locally trusted")
         with self.store._connect() as conn:
             row=conn.execute("SELECT manifest FROM miniapps WHERE id=?",(record.id,)).fetchone()
         return validate_miniapp(json.loads(row["manifest"]))
