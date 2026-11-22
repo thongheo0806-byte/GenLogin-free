@@ -80,3 +80,34 @@ unlocked, accessible interactive desktop and human-reviewed results.
 - Windows GUI pywinauto job: actual Windows HWND state.
 - All other original Windows CI lanes must continue to pass, including
   Chrome/Edge, Firefox/WebKit, old Windows environment upgrade.
+
+
+## 2026-11-22 selected-tab recorder correctness and shutdown cleanup
+
+A browser context can contain several tabs. The sequential workflow
+runner executes against its **first tab**, so a recorder that silently
+collects clicks from all tabs would produce incorrect and potentially
+destructive replay actions. The Recorder now pins its capture to the
+first existing tab at Record start, rejects events from all other tabs
+and tracks how many tabs were ignored. The review dialog discloses
+this count. It also records only **Enter/Escape** on visible text
+inputs/controls without capturing typed characters, password fields
+or arbitrary keyboard shortcuts. Recordings cannot be imported while
+capture is active; the user must first press Stop.
+
+When the selected tab closes, recording automatically stops and
+the review warns that the selected capture page is gone. It never
+silently changes to a different browser tab. The selected tab's
+`domcontentloaded` events are counted without storing URL/path/query;
+background tab loads do not increment navigation counts.
+
+Tests use a real multi-tab Playwright Chromium context with synthetic
+input values. Events from the other tab must not appear in the recorder,
+safe Enter must survive without a key payload, and closing the selected
+tab must stop capture. The Tk desktop lifecycle also cancels its
+scheduled polling/search callbacks on root destruction to prevent
+post-destroy Tcl warnings surfaced by pywinauto GUI acceptance.
+
+Still unsupported: deliberate cross-tab workflow replay, complex
+iframe selectors, typing playback, URL/query capture, video capture,
+visual-target reliability, and exhaustive OpenAdapt task parity.
