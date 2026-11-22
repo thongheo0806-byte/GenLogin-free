@@ -3,6 +3,10 @@ from __future__ import annotations
 
 import base64
 import json
+import io
+import sys
+from contextlib import redirect_stdout
+from unittest.mock import patch
 import sqlite3
 import tempfile
 import unittest
@@ -122,6 +126,42 @@ class SignedMiniappsTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.catalog.list()
         self.assertEqual(len(self.catalog.list_publishers()),1)
+
+    def test_private_pem_signing_cli_preserves_existing_output_and_prints_only_public_key(self):
+        from cryptography.hazmat.primitives import serialization
+        from autumn_genlogin.miniapp_signatures import main
+        private_file=self.home/"only-local-private.pem"
+        private_file.write_bytes(self.private.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption(),
+        ))
+        manifest_file=self.home/"manifest.json"
+        manifest_file.write_text(json.dumps(self.manifest),encoding="utf-8")
+        output=self.home/"signed.json"
+        buffer=io.StringIO()
+        with patch.object(sys,"argv",[
+            "miniapp_signatures","sign",str(manifest_file),str(private_file),str(output)
+        ]),redirect_stdout(buffer):
+            result=main()
+        self.assertEqual(result,0)
+        saved=json.loads(output.read_text(encoding="utf-8"))
+        self.assertEqual(saved["format"],SIGNED_FORMAT)
+        self.assertEqual(verify_signed_package(saved)[0],self.manifest)
+        original=output.read_bytes()
+        with patch.object(sys,"argv",[
+            "miniapp_signatures","sign",str(manifest_file),str(private_file),str(output)
+        ]),redirect_stdout(io.StringIO()):
+            self.assertEqual(main(),1,"CLI must not overwrite an existing package")
+        self.assertEqual(output.read_bytes(),original)
+        buffer=io.StringIO()
+        with patch.object(sys,"argv",[
+            "miniapp_signatures","public",str(private_file)
+        ]),redirect_stdout(buffer):
+            self.assertEqual(main(),0)
+        self.assertIn(saved["public_key"],buffer.getvalue())
+        self.assertIn(publisher_fingerprint(saved["public_key"]),buffer.getvalue())
+        self.assertNotIn("BEGIN PRIVATE KEY",buffer.getvalue())
 
     def test_signed_json_file_import_and_validation_no_auto_execution(self):
         self.catalog.trust_publisher("Synthetic",self.signed["public_key"])
