@@ -148,7 +148,8 @@ class App:
         self.status = tk.StringVar(value="Ready · Everything runs locally")
         self._build()
         self.refresh()
-        self.root.after(150, self.poll_events)
+        self._ui_destroyed = False
+        self._poll_after = self.root.after(150, self.poll_events)
         self.root.protocol("WM_DELETE_WINDOW", self.on_quit)
         self.root.bind("<Destroy>", self._root_destroyed, add="+")
 
@@ -631,6 +632,12 @@ class App:
     def import_recording(self):
         pid = self.selected_id()
         if not pid: return
+        report = self.manager.recording_review(pid)
+        if report and report.get("still_recording"):
+            messagebox.showwarning("Recorder",
+                "Stop the selected-tab recording before reviewing or importing its steps.",
+                parent=self.root)
+            return
         steps = self.manager.recorded_steps(pid)
         if not steps:
             messagebox.showinfo("Recorder", "No actions recorded. Open a profile and click Record first.", parent=self.root)
@@ -642,7 +649,8 @@ class App:
             warnings = "\n".join("• " + line for line in report["warnings"])
             details = (f"Actions: {report['step_count']}\n"
                        f"Redacted form fields: {report['redacted_fields']}\n"
-                       f"Observed page loads (no URLs retained): {report['navigation_boundaries']}\n\n"
+                       f"Observed page loads (no URLs retained): {report['navigation_boundaries']}\n"
+                       f"Other tabs ignored: {report['ignored_tabs']}\n\n"
                        + warnings + "\n\nImport as an EDITABLE draft?")
             if not messagebox.askyesno("Review recorded actions before replay",
                                        details, parent=self.root):
@@ -1420,10 +1428,22 @@ class App:
                 if kind == "error":
                     self.status.set("Browser error: " + message[:130])
         finally:
-            self.root.after(150, self.poll_events)
+            if not self._ui_destroyed:
+                try:
+                    self._poll_after=self.root.after(150, self.poll_events)
+                except tk.TclError:
+                    self._ui_destroyed=True
 
     def _root_destroyed(self, event):
         if event.widget is self.root:
+            self._ui_destroyed=True
+            for ident in (getattr(self,"_poll_after",None),
+                          getattr(self,"_search_after",None)):
+                if ident:
+                    try:
+                        self.root.after_cancel(ident)
+                    except tk.TclError:
+                        pass
             self.batches.cancel_all()
             self.scheduler.stop()
             self.manager.stop_all()
