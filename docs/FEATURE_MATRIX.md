@@ -16,7 +16,7 @@ The [official public release notes](https://genlogin.com/release-notes) currentl
 | Visual graph automation | [Automation](https://genlogin.com/automation) | Bounded action/condition/repeat plus ephemeral literal and captured-text variables, Tk graph editor | Full GenLogin node catalog, parallel branches, advanced retries, GUI usability |
 | Recorder | [Automation](https://genlogin.com/automation) | Opt-in structural DOM recording, always-redacted form data, no URL capture, explicit human review, navigation boundary count and main-frame-only binding (development) | Resilient multi-frame/multi-tab replay, full action mapping, durable consent, real-world usability |
 | Scheduler | [Automation](https://genlogin.com/automation) | SQLite one-shot/interval scheduler, manual retry, per-run journal, terminal callback from real BrowserManager, authenticated run history API and GUI | Windows end-to-end, long-running resilience, external-process crash recovery and complete workflow traces; active app required |
-| Image click, video, AI, synchronizer, miniapps | [Automation](https://genlogin.com/automation) | Local OpenCV template click, nonproduction browser-use AI lab, localhost-only QA mirror, plus reviewed local declarative Miniapps gallery (development); no video/general synchronizer/marketplace | Real AI acceptance, full live sync, video actions, signed publisher registry, catalog updates and GUI tests |
+| Image click, video, AI, synchronizer, miniapps | [Automation](https://genlogin.com/automation) | Local OpenCV click, isolated AI lab, localhost-only QA mirror, local declarative Miniapps with manual Ed25519 key pinning/signatures (development); no video/full sync/marketplace | Real AI acceptance, full live sync, video actions, independently authenticated publisher identity, online signed marketplace/updates and complete GUI tests |
 | Full cloud browser-session sync | [Local/cloud profiles](https://docs.genlogin.com/group-profiles/local-and-cloud-profiles) | Manual double-encrypted .aglb handoff with explicitly resumable 16MiB upload UUID, authenticated immutable chunks/final manifest, revocation and new-UUID restore (development) | No automatic live session sync, large transfer (>16MiB), unattended reconciliation/download resumption, cloud production SLA, orphan cleanup or Titan portability verification |
 | Optional team metadata sync | [Sharing](https://docs.genlogin.com/group-profiles/share-profile) | Encrypted metadata/workflows, loopback RBAC and revisions; redirect bearer-token fix | Production HTTPS, disaster recovery, wider security tests |
 | Public API compatibility | [GenLogin API](https://docs.genlogin.com/genlogin-api/profile-api/1.-profile-list) | Authenticated, native /v1 loopback API and no-redirect Python SDK (development) | GenLogin protocol parity, stable contract versioning, external integration acceptance |
@@ -157,3 +157,19 @@ The [official public release notes](https://genlogin.com/release-notes) currentl
   end-to-end decrypted offline restoration.
 - **Not** an automatic sync engine, not resumable download or cloud session
   merge, not streaming for large backups and not permission to ship an EXE.
+
+
+## 2026-11-22 local Miniapp publisher-key signatures (development)
+
+- Signed JSON Miniapps must pass Ed25519 verification of a canonical,
+  domain-separated validated manifest AND match a separately user-trusted
+  SHA-256 public-key fingerprint. Unsigned legacy imports remain marked
+  UNSIGNED and require manual workflow review.
+- The catalog pins a Miniapp name to the same verified key across signed
+  versions, refuses conflicting keys, verifies persisted signatures on
+  read and blocks loading if the key is untrusted/revoked. Signing keys
+  are never silently trusted from an imported package. Only public
+  keys and signatures are stored, not private keys.
+- This does NOT provide a certificate authority, publisher identity
+  verification, real Miniapps marketplace, automatic update or arbitrary
+  third-party plugin sandbox. See `MINIAPPS.md` for key-safety protocol.
