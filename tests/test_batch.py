@@ -77,10 +77,27 @@ class BatchTests(unittest.TestCase):
         self.profiles=[self.store.save(Profile(name=f"batch {i}")) for i in range(5)]
         self.ids=[p.id for p in self.profiles]
         self.workflow=[{"action":"wait","seconds":0}]
+        self.runners=[]
+        # addCleanup runs LIFO: workers must finish and release thread-owned
+        # SQLite handles BEFORE TemporaryDirectory.cleanup on Windows.
+        self.addCleanup(self._finish_workers_before_removing_database)
+
+    def make_runner(self,manager):
+        runner=BatchRunner(self.store,manager)
+        self.runners.append(runner)
+        return runner
+
+    def _finish_workers_before_removing_database(self):
+        for runner in self.runners:
+            runner.cancel_all()
+            for key in tuple(runner._threads):
+                self.assertTrue(runner.wait(key,timeout=10),
+                    "Batch worker still holds its Windows SQLite connection")
+        self.store.close_thread_connection()
 
     def test_multi_profile_parallelism_bounded_and_completion(self):
         manager=FakeManager(delay=0.08)
-        runner=BatchRunner(self.store,manager)
+        runner=self.make_runner(manager)
         batch_id=runner.start(self.ids,self.workflow,max_parallel=2)
         self.assertTrue(eventually(lambda:runner.get(batch_id)["status"]=="succeeded"))
         result=runner.get(batch_id)
@@ -92,7 +109,7 @@ class BatchTests(unittest.TestCase):
 
     def test_validation_is_atomic_and_no_browser_launch(self):
         manager=FakeManager()
-        runner=BatchRunner(self.store,manager)
+        runner=self.make_runner(manager)
         invalid_cases=[
             ([],self.workflow,1),
             (self.ids+[self.ids[0]],self.workflow,1),
@@ -110,7 +127,7 @@ class BatchTests(unittest.TestCase):
 
     def test_one_profile_launch_failure_only_marks_its_item(self):
         manager=FakeManager(reject=self.ids[2])
-        runner=BatchRunner(self.store,manager)
+        runner=self.make_runner(manager)
         key=runner.start(self.ids,self.workflow,max_parallel=3)
         self.assertTrue(eventually(lambda:runner.get(key)["status"]=="partial"))
         entry=runner.get(key)
@@ -122,7 +139,7 @@ class BatchTests(unittest.TestCase):
 
     def test_cancel_does_not_launch_queue_or_cancel_someone_else(self):
         manager=FakeManager(delay=0.8)
-        runner=BatchRunner(self.store,manager)
+        runner=self.make_runner(manager)
         key=runner.start(self.ids,self.workflow,max_parallel=1)
         self.assertTrue(eventually(lambda:any(i["status"]=="running" for i in runner.get(key)["items"])))
         runner.cancel(key)
@@ -133,7 +150,7 @@ class BatchTests(unittest.TestCase):
 
     def test_redacts_workflow_values_and_does_not_keep_payload(self):
         manager=FakeManager()
-        runner=BatchRunner(self.store,manager)
+        runner=self.make_runner(manager)
         secret="fake-sensitive-input"
         payload=[{"action":"fill","selector":"#input","text":secret}]
         key=runner.start(self.ids[:1],payload)
@@ -141,7 +158,7 @@ class BatchTests(unittest.TestCase):
         self.assertNotIn(secret,json.dumps(runner.get(key)))
 
     def test_bad_batch_id_and_list_limit(self):
-        runner=BatchRunner(self.store,FakeManager())
+        runner=self.make_runner(FakeManager())
         with self.assertRaises(KeyError):runner.get(str(uuid4()))
         with self.assertRaises(ValueError):runner.list(limit=31)
         with self.assertRaises(ValueError):runner.get("../foo")
