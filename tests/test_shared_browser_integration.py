@@ -160,6 +160,8 @@ class SharedBrowserRealTests(unittest.TestCase):
         self.assertEqual({i["status"] for i in imported["items"]},{"succeeded"})
         self.assertNotIn("Autumn test",str(imported))
         self.assertTrue(eventually(lambda:all(not self.manager.active(pid) for pid in ids),timeout=20))
+        self.assertTrue(runner.wait(batch_id,timeout=20),
+                        "Real Chromium batch threads must close SQLite handles before Windows cleanup")
 
     def test_graph_capture_text_passes_browser_data_without_logging_or_persisting(self):
         """Real Chromium: capture local heading, fill input, keep value transient."""
