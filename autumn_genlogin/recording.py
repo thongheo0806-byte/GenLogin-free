@@ -75,6 +75,7 @@ class RecordingReview:
     steps: list[dict]
     redacted_fields: int
     navigation_boundaries: int
+    ignored_tabs: int
     warnings: tuple[str, ...]
 
     def public_summary(self) -> dict:
@@ -82,16 +83,20 @@ class RecordingReview:
             "step_count": len(self.steps),
             "redacted_fields": self.redacted_fields,
             "navigation_boundaries": self.navigation_boundaries,
+            "ignored_tabs": self.ignored_tabs,
             "requires_review": True,
             "warnings": list(self.warnings),
         }
 
 
-def review_recording(events: list[dict], *, navigation_boundaries: int = 0) -> RecordingReview:
+def review_recording(events: list[dict], *, navigation_boundaries: int = 0,
+                     ignored_tabs: int = 0) -> RecordingReview:
     if not isinstance(events, list) or len(events) > MAX_RECORDED_STEPS:
         raise ValueError("Recording exceeds maximum 100 reviewed steps")
     if type(navigation_boundaries) is not int or navigation_boundaries < 0:
         raise ValueError("Invalid navigation boundary count")
+    if type(ignored_tabs) is not int or not 0 <= ignored_tabs <= 1000:
+        raise ValueError("Invalid ignored-tab count")
     # Re-scrub all events: no path through importing a recording may restore
     # typed input values sent by a malicious page or outdated recorder.
     cleaned = [sanitize_recorded_event(x) for x in events]
@@ -108,4 +113,10 @@ def review_recording(events: list[dict], *, navigation_boundaries: int = 0) -> R
             f"{navigation_boundaries} page load(s) observed: URLs were intentionally not captured; "
             "add explicit, reviewed navigation checks before replay."
         )
-    return RecordingReview(deepcopy(cleaned), redacted, navigation_boundaries, tuple(warnings))
+    if ignored_tabs:
+        warnings.append(
+            f"{ignored_tabs} other browser tab(s) excluded: replay targets ONLY the first tab. "
+            "Record a new workflow for each tab instead."
+        )
+    return RecordingReview(deepcopy(cleaned), redacted, navigation_boundaries,
+                           ignored_tabs, tuple(warnings))
