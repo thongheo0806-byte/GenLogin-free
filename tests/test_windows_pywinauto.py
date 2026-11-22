@@ -63,5 +63,76 @@ class WindowsPywinautoSmokeTests(unittest.TestCase):
                     os.environ["AUTUMN_GENLOGIN_HOME"] = old
 
 
+    def test_mouse_keyboard_create_profile_through_real_gui(self):
+        """Actual OS mouse/keyboard events drive a Tk modal and persisted profile."""
+        import tkinter as tk
+        from tkinter import ttk
+        from pywinauto import Desktop, mouse, keyboard
+        from autumn_genlogin.ui import App, ProfileEditor
+
+        def walk(widget):
+            yield widget
+            for child in widget.winfo_children():
+                yield from walk(child)
+
+        def click_center(widget, root):
+            root.update()
+            self.assertTrue(widget.winfo_viewable(), "GUI target must be visible")
+            point = (widget.winfo_rootx() + widget.winfo_width()//2,
+                     widget.winfo_rooty() + widget.winfo_height()//2)
+            mouse.click(button="left", coords=point)
+            root.update()
+
+        with tempfile.TemporaryDirectory() as home:
+            previous=os.environ.get("AUTUMN_GENLOGIN_HOME")
+            os.environ["AUTUMN_GENLOGIN_HOME"]=home
+            root=tk.Tk()
+            try:
+                app=App(root)
+                root.update()
+                new_buttons=[w for w in walk(root)
+                             if isinstance(w,ttk.Button)
+                             and w.cget("text")=="+ New profile"]
+                self.assertEqual(len(new_buttons),1)
+                click_center(new_buttons[0],root)
+                modals=[w for w in root.winfo_children()
+                        if isinstance(w,ProfileEditor)]
+                self.assertEqual(len(modals),1,
+                    "Real OS click did not open Create profile dialog")
+                editor=modals[0]
+                self.assertEqual(editor.title(),"Create profile")
+                top_windows=[w for w in Desktop(backend="win32").windows()
+                             if w.process_id()==os.getpid()
+                             and w.window_text()=="Create profile"]
+                self.assertEqual(len(top_windows),1,
+                    "Win32 must enumerate the genuine new-profile dialog")
+                name_fields=[w for w in walk(editor)
+                             if isinstance(w,ttk.Entry)
+                             and str(w.cget("textvariable"))==str(editor.fields["name"])]
+                self.assertEqual(len(name_fields),1)
+                click_center(name_fields[0],root)
+                keyboard.send_keys("^a")
+                keyboard.send_keys("Real_Win32_Input_QA",with_spaces=True,pause=0.01)
+                root.update()
+                self.assertEqual(editor.fields["name"].get(),"Real_Win32_Input_QA",
+                    "Real OS keyboard input did not enter profile name")
+                save_buttons=[w for w in walk(editor)
+                              if isinstance(w,ttk.Button)
+                              and w.cget("text")=="Save profile"]
+                self.assertEqual(len(save_buttons),1)
+                click_center(save_buttons[0],root)
+                self.assertEqual(editor.winfo_exists(),0)
+                profiles=app.store.all()
+                self.assertEqual(len(profiles),1)
+                self.assertEqual(profiles[0].name,"Real_Win32_Input_QA")
+                self.assertIn(profiles[0].id,app.tree.get_children())
+            finally:
+                root.destroy()
+                if previous is None:
+                    os.environ.pop("AUTUMN_GENLOGIN_HOME",None)
+                else:
+                    os.environ["AUTUMN_GENLOGIN_HOME"]=previous
+
+
 if __name__=="__main__":
     unittest.main()
