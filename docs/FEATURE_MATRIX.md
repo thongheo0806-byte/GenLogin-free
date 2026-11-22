@@ -17,7 +17,7 @@ The [official public release notes](https://genlogin.com/release-notes) currentl
 | Recorder | [Automation](https://genlogin.com/automation) | Opt-in structural DOM recording, always-redacted form data, no URL capture, explicit human review, navigation boundary count and main-frame-only binding (development) | Resilient multi-frame/multi-tab replay, full action mapping, durable consent, real-world usability |
 | Scheduler | [Automation](https://genlogin.com/automation) | SQLite one-shot/interval scheduler, manual retry, per-run journal, terminal callback from real BrowserManager, authenticated run history API and GUI | Windows end-to-end, long-running resilience, external-process crash recovery and complete workflow traces; active app required |
 | Image click, video, AI, synchronizer, miniapps | [Automation](https://genlogin.com/automation) | Local OpenCV template click, nonproduction browser-use AI lab, localhost-only QA mirror, plus reviewed local declarative Miniapps gallery (development); no video/general synchronizer/marketplace | Real AI acceptance, full live sync, video actions, signed publisher registry, catalog updates and GUI tests |
-| Full cloud browser-session sync | [Local/cloud profiles](https://docs.genlogin.com/group-profiles/local-and-cloud-profiles) | Manual double-encrypted bounded .aglb backup handoff via self-hosted TeamHub, immutable chunks and final manifest; restore creates new UUID (development) | No automatic syncing, large profile streaming (>16MiB), unattended reconciliation, cloud production SLA, recovery/cleanup or Titan portability verification |
+| Full cloud browser-session sync | [Local/cloud profiles](https://docs.genlogin.com/group-profiles/local-and-cloud-profiles) | Manual double-encrypted .aglb handoff with explicitly resumable 16MiB upload UUID, authenticated immutable chunks/final manifest, revocation and new-UUID restore (development) | No automatic live session sync, large transfer (>16MiB), unattended reconciliation/download resumption, cloud production SLA, orphan cleanup or Titan portability verification |
 | Optional team metadata sync | [Sharing](https://docs.genlogin.com/group-profiles/share-profile) | Encrypted metadata/workflows, loopback RBAC and revisions; redirect bearer-token fix | Production HTTPS, disaster recovery, wider security tests |
 | Public API compatibility | [GenLogin API](https://docs.genlogin.com/genlogin-api/profile-api/1.-profile-list) | Authenticated, native /v1 loopback API and no-redirect Python SDK (development) | GenLogin protocol parity, stable contract versioning, external integration acceptance |
 | Release, license and reliability | Engineering acceptance | Test-only Windows CI, diagnostics, staged deletion | Full GUI acceptance, fault injection, license/SBOM, signing |
@@ -141,3 +141,19 @@ The [official public release notes](https://genlogin.com/release-notes) currentl
 
 - Owner/admin can permanently revoke a published encrypted handoff by UUID; the self-hosted Hub atomically tombstones the ID and removes encrypted parts/manifest. Reads and republishing under the same ID return HTTP 410. Viewer/editor cannot revoke, and retries are idempotent.
 - Revocation of Hub storage **does not remotely erase** earlier downloads or invalidate active website sessions. This is not automatic cloud sync, not a hosted remote wipe feature and not verified full GenLogin cloud profile sharing. See `CLOUD_SESSION_HANDOFF.md`.
+
+
+## 2026-11-22 explicit cloud archive upload resumption (development)
+
+- The Team Sync GUI pre-issues a random UUID for each new upload, puts it
+  in the clipboard **before network operations**, and provides a separate
+  opt-in Resume action. Resumption requires the exact encrypted backup
+  and same team key, authenticates any existing encrypted chunk and
+  compares its full contents before deciding to skip it.
+- An already-published manifest must match size, chunk count and SHA-256.
+  Missing chunks after publication, altered source, wrong team key and
+  revoked IDs all fail closed, never replace a part. HTTP loopback tests
+  inject an actual failed push and verify subsequent matching resume and
+  end-to-end decrypted offline restoration.
+- **Not** an automatic sync engine, not resumable download or cloud session
+  merge, not streaming for large backups and not permission to ship an EXE.

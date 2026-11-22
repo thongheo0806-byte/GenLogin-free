@@ -39,8 +39,10 @@ plaintext and not a GenLogin-compatible cloud profile format.
 
 - Archive maximum **16 MiB**, split into ≤64 *256 KiB* chunks. Larger profiles
   must use local offline backup or an independently validated storage
-  design. A network failure may leave encrypted orphaned parts, but no
-  published manifest; there is **no automatic retry**.
+  design. A network failure may leave encrypted unfinished parts, but no
+  published manifest. **Manual** resume with the same UUID, original encrypted
+  .aglb bytes and TEAM passphrase authenticates existing parts and appends only
+  missing ones; no automatic retry/replay occurs.
 - Session documents use unique names `session-<uuid>-NN` and a final
   `session-<uuid>-manifest`. TeamHub rejects attempts to replace a
   published part or manifest, only permits owner/admin/editor to write,
@@ -65,7 +67,7 @@ plaintext and not a GenLogin-compatible cloud profile format.
 
 **No automatic cloud session sync** (live file locks, cache consistency,
 cross-version migration, browser sharing, conflict merges, cron replay,
-unlimited blob storage, filesystem streaming, resumable uploads, orphan GC,
+unlimited blob storage, filesystem streaming, unattended retries, orphan GC,
 expiry/revocation, production secret rotation, backups/DR, bandwidth quotas,
 full transfer protocol fuzzing, TLS infrastructure, verified engine
 portability or legal Titan parity). A compromised OS, weak passphrases or
@@ -96,3 +98,32 @@ revocation cannot delete those copies, log out their accounts, invalidate
 website cookies or revoke the underlying browser sessions. Invalidate
 sessions at the **original services** if account access is compromised.
 This is server-storage access control, not complete cloud session sync.
+
+
+## 2026-11-22 resume a failed encrypted archive upload
+
+1. Before the FIRST upload, the Team Sync dialog displays a newly
+   generated handoff UUID and copies it to the clipboard. **Save this ID**
+   securely outside the application. A failed upload does not guarantee
+   which chunks reached the Hub.
+2. If an upload disconnects, choose **Resume interrupted encrypted backup
+   upload** and enter the same UUID. Select the **exact same .aglb file**
+   and the **same TEAM passphrase**; the original archive passphrase is not
+   needed to transfer already-encrypted bytes.
+3. The client checks an existing published manifest if present. For each
+   saved part it downloads the separately authenticated encrypted document,
+   validates exact JSON fields and compares the still-encrypted bytes with
+   the corresponding part of the local backup. **Only a missing, previously
+   unpublished part is uploaded**. A fully matching already-published
+   transfer is safe to retry and returns the original UUID.
+4. If the transfer ID refers to a different backup, any part differs, the
+   team passphrase is wrong, or the archive is revoked, the client refuses
+   the operation. A published manifest with a missing part also fails;
+   the client does not silently repair an inconsistent published archive.
+5. The final manifest remains immutable and is written **last**. All
+   archive data remains doubly encrypted. This does not resume downloads,
+   support huge archives (>16 MiB), garbage-collect abandoned IDs or
+   automatically sync live browser sessions.
+
+**Confidentiality note:** The UUID is not a password, but do not publish
+it. Already-downloaded copies cannot be revoked from other computers.

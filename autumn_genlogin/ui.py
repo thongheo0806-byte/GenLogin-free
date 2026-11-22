@@ -9,6 +9,7 @@ import time
 import tkinter as tk
 from dataclasses import replace
 from pathlib import Path
+from uuid import uuid4
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
 from .api import LocalAPI
@@ -1059,6 +1060,8 @@ class App:
                    command=self.cloud_download_session).pack(side="left",padx=(0,9))
         ttk.Button(archive_row,text="Revoke team archive",
                    command=self.cloud_revoke_session).pack(side="left")
+        ttk.Button(frame,text="Resume interrupted encrypted backup upload",
+                   command=self.cloud_resume_upload_session).pack(anchor="w",pady=(1,8))
         self.cloud_status=tk.StringVar(value="Not signed in")
         ttk.Label(frame,textvariable=self.cloud_status).pack(anchor="w")
         ttk.Label(frame,text="Remote team roles: owner, admin, editor, viewer. Push uses revision checks to reject conflicts.",style="Muted.TLabel").pack(anchor="w",pady=8)
@@ -1073,36 +1076,62 @@ class App:
         threading.Thread(target=worker,daemon=True).start()
 
     def cloud_upload_session(self):
+        # Preassign an ID so a failed upload can be resumed after restart.
+        self._cloud_upload_session(str(uuid4()),resuming=False)
+
+    def cloud_resume_upload_session(self):
         if not self.cloud:
             return messagebox.showinfo("Team sync","Log in first",parent=self.root)
-        source=filedialog.askopenfilename(title="Select an already encrypted .aglb backup",
+        ident=simpledialog.askstring("Resume encrypted backup upload",
+            "Enter the original 36-character handoff ID.\n"
+            "You must select EXACTLY the same encrypted .aglb file and "
+            "use the same TEAM passphrase.\n"
+            "A mismatch will be rejected, never overwritten.",parent=self.root)
+        if ident:
+            self._cloud_upload_session(ident.strip(),resuming=True)
+
+    def _cloud_upload_session(self,ident,resuming=False):
+        if not self.cloud:
+            return messagebox.showinfo("Team sync","Log in first",parent=self.root)
+        source=filedialog.askopenfilename(title="Select the already encrypted .aglb backup",
                    filetypes=[("Autumn encrypted backup","*.aglb")])
         if not source:
             return
         team_id=self.cloud_fields["team_id"].get().strip()
         passphrase=self.cloud_fields["passphrase"].get()
         if len(passphrase)<12:
-            return messagebox.showerror("Session backup","Enter a strong shared TEAM encryption passphrase.",
-                                        parent=self.root)
-        if not messagebox.askyesno("Share SENSITIVE encrypted browser session",
-                "You are about to share an encrypted archive containing browser "
-                "cookies, saved sessions and local storage with authorized team members.\n\n"
-                "The archive is already password-encrypted and will be encrypted "
-                "again using the TEAM passphrase. Anyone with BOTH passphrases "
-                "and team access could restore the data.\n"
-                "Only upload a backup from a STOPPED profile. Continue?",
+            return messagebox.showerror("Session backup",
+                "Enter a strong shared TEAM encryption passphrase.",parent=self.root)
+        warning=("RESUME a previously interrupted transfer" if resuming
+                 else "UPLOAD a sensitive encrypted browser session")
+        if not messagebox.askyesno(warning,
+                "You are sharing an encrypted archive containing cookies, "
+                "saved sessions and local storage.\n\n"
+                "The backup is already encrypted with its own archive password "
+                "and will be encrypted again with the TEAM password.\n"
+                "Members with both passwords and access can restore it.\n\n"
+                f"Transfer ID: {ident}\n"
+                "Copy this ID before starting so you can resume if interrupted.\n"
+                "Use only a backup from a STOPPED profile. Continue?",
                 parent=self.root):
             return
+        # The ID must be available BEFORE the background worker sends data.
+        # Clipboard contains only random UUID, never credentials or a password.
+        self.root.clipboard_clear()
+        self.root.clipboard_append(ident)
+        self.cloud_status.set("Encrypted transfer ID copied (keep for retries): "+ident)
+
         def task():
-            return CloudSessionHandoff(self.cloud).upload(team_id,Path(source),passphrase)
-        def finished(ident):
-            self.root.clipboard_clear()
-            self.root.clipboard_append(ident)
-            self.cloud_status.set("Encrypted archive handoff ID copied: "+ident)
-            messagebox.showinfo("Backup uploaded",
-                "Encrypted backup published to the team.\n"
-                "Handoff ID copied to clipboard; share it only with trusted team members.\n"
-                "This is a manual transfer, not active-profile cloud sync.",
+            return CloudSessionHandoff(self.cloud).upload(
+                team_id,Path(source),passphrase,session_id=ident)
+        def finished(actual_id):
+            self.cloud_status.set("Encrypted archive published: "+actual_id)
+            messagebox.showinfo("Encrypted backup uploaded",
+                "The encrypted backup was published to the team.\n"
+                "Transfer UUID: "+actual_id+"\n\n"
+                "This was a manual file handoff, not live session sync.\n"
+                "You may retry a completed transfer with the same file: "
+                "the server's contents will be verified but NOT overwritten.",
                 parent=self.root)
         self._cloud_action(task,finished)
 

@@ -118,6 +118,111 @@ class CloudSessionHandoffHTTPTests(unittest.TestCase):
         self.assertEqual(size,extra.stat().st_size)
         self.assertEqual(target.read_bytes(),extra.read_bytes())
 
+    def test_interrupted_upload_resumes_without_replacing_encrypted_parts(self):
+        from uuid import uuid4
+        folder=self.store.profile_path(self.profile.id)
+        (folder/"LargeSynthetic").write_bytes(os.urandom(360*1024))
+        source=self.root/"big.aglb"
+        export_encrypted_profile(self.store,self.profile.id,source,self.BACKUP)
+        self.assertGreater(source.stat().st_size,256*1024)
+        ident=str(uuid4())
+
+        class InterruptedClient:
+            def __init__(self,delegate):
+                self.delegate=delegate
+                self.triggered=False
+            def pull(self,*args):
+                return self.delegate.pull(*args)
+            def push(self,team,name,revision,document,password):
+                if name.endswith("-01") and not self.triggered:
+                    self.triggered=True
+                    raise ConnectionError("Simulated one-time disconnected upload")
+                return self.delegate.push(team,name,revision,document,password)
+
+        broken=InterruptedClient(self.owner)
+        with self.assertRaises(ConnectionError):
+            CloudSessionHandoff(broken).upload(
+                self.team,source,self.SHARED,session_id=ident)
+        self.assertTrue(broken.triggered)
+        revision,first=self.owner.pull(self.team,_name(ident,0),self.SHARED)
+        self.assertEqual(revision,1)
+        self.assertEqual(self.owner.pull(self.team,_name(ident),self.SHARED)[0],0)
+        resumed=CloudSessionHandoff(self.owner).upload(
+            self.team,source,self.SHARED,session_id=ident)
+        self.assertEqual(resumed,ident)
+        self.assertEqual(self.owner.pull(self.team,_name(ident,0),self.SHARED),(1,first))
+        with closing(sqlite3.connect(self.root/"team.sqlite3")) as conn:
+            before=conn.execute(
+                "SELECT COUNT(*) FROM documents WHERE team_id=? AND name LIKE ?",
+                (self.team,"session-"+ident+"-%")).fetchone()[0]
+            self.assertGreaterEqual(before,3)
+        # Completed same-ID retry verifies and returns without new revisions.
+        self.assertEqual(CloudSessionHandoff(self.owner).upload(
+            self.team,source,self.SHARED,session_id=ident),ident)
+        with closing(sqlite3.connect(self.root/"team.sqlite3")) as conn:
+            after=conn.execute(
+                "SELECT COUNT(*) FROM documents WHERE team_id=? AND name LIKE ?",
+                (self.team,"session-"+ident+"-%")).fetchone()[0]
+        self.assertEqual(before,after)
+        target=self.root/"download-resumed.aglb"
+        CloudSessionHandoff(self.viewer).download(self.team,ident,target,self.SHARED)
+        self.assertEqual(source.read_bytes(),target.read_bytes())
+
+    def test_resume_refuses_different_backup_and_wrong_team_password(self):
+        from uuid import uuid4
+        ident=str(uuid4())
+
+        class DropManifestClient:
+            def __init__(self,delegate):
+                self.delegate=delegate
+            def pull(self,*args):
+                return self.delegate.pull(*args)
+            def push(self,team,name,revision,doc,password):
+                if name.endswith("-manifest"):
+                    raise ConnectionError("No final publish")
+                return self.delegate.push(team,name,revision,doc,password)
+
+        with self.assertRaises(ConnectionError):
+            CloudSessionHandoff(DropManifestClient(self.owner)).upload(
+                self.team,self.source,self.SHARED,session_id=ident)
+        other=self.root/"freshly-encrypted.aglb"
+        export_encrypted_profile(self.store,self.profile.id,other,self.BACKUP)
+        self.assertNotEqual(other.read_bytes(),self.source.read_bytes())
+        with self.assertRaisesRegex(ValueError,"incompatible part"):
+            CloudSessionHandoff(self.owner).upload(
+                self.team,other,self.SHARED,session_id=ident)
+        with self.assertRaises(Exception):
+            CloudSessionHandoff(self.owner).upload(
+                self.team,self.source,"incorrect team password",session_id=ident)
+        self.assertEqual(self.owner.pull(self.team,_name(ident),self.SHARED)[0],0)
+        self.assertEqual(CloudSessionHandoff(self.owner).upload(
+            self.team,self.source,self.SHARED,session_id=ident),ident)
+
+    def test_resume_cannot_republish_revoked_or_corrupt_final_manifest(self):
+        from uuid import uuid4
+        ident=str(uuid4())
+        CloudSessionHandoff(self.owner).upload(
+            self.team,self.source,self.SHARED,session_id=ident)
+        with closing(sqlite3.connect(self.root/"team.sqlite3")) as conn:
+            with conn:
+                conn.execute("DELETE FROM documents WHERE team_id=? AND name=?",
+                             (self.team,_name(ident,0)))
+        with self.assertRaisesRegex(ValueError,"missing parts"):
+            CloudSessionHandoff(self.owner).upload(
+                self.team,self.source,self.SHARED,session_id=ident)
+        ident2=str(uuid4())
+        CloudSessionHandoff(self.owner).upload(
+            self.team,self.source,self.SHARED,session_id=ident2)
+        self.owner.revoke_session(self.team,ident2)
+        with self.assertRaises(HubError) as blocked:
+            CloudSessionHandoff(self.owner).upload(
+                self.team,self.source,self.SHARED,session_id=ident2)
+        self.assertEqual(blocked.exception.status,410)
+        for invalid in ("../unsafe","not-uuid",ident2.upper()):
+            with self.subTest(session_id=invalid),self.assertRaises(ValueError):
+                CloudSessionHandoff(self.owner).upload(
+                    self.team,self.source,self.SHARED,session_id=invalid)
+
     def test_owner_can_revoke_archive_and_tombstone_prevents_resurrection(self):
         ident=CloudSessionHandoff(self.owner).upload(self.team,self.source,self.SHARED)
         before=self.owner.pull(self.team,_name(ident),self.SHARED)
