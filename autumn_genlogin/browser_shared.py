@@ -58,9 +58,12 @@ RECORD_SCRIPT = r"""(() => {
   }, true);
   // Capture only structural browser actions. Never read input values or page URL.
   document.addEventListener('keydown', function(ev) {
-    if (ev.key !== 'Escape' || !ev.target || !ev.target.closest) return;
-    const el=ev.target.closest('button,a,[role=button]');
-    if (el) { const s=selector(el); if (s) send({action:'press',selector:s,key:'Escape'}); }
+    if (!['Enter','Escape'].includes(ev.key) || !ev.target || !ev.target.closest) return;
+    // Never record keystrokes on credentials, email, telephone or number inputs.
+    const el=ev.target.closest('button,a,[role=button],textarea,input:not([type]),input[type=search],input[type=text]');
+    if (!el || el.closest('input[type=password]')) return;
+    const s=selector(el);
+    if (s) send({action:'press',selector:s,key:ev.key});
   }, true);
   document.addEventListener('change', function(ev) {
     const el=ev.target;
@@ -91,6 +94,9 @@ class Session:
     recorded_navigation_count: int = 0
     recorder_page_observers: set[int] = field(default_factory=set)
     recorder_page_hooked: bool = False
+    recorder_page: object = None
+    recorder_ignored_pages: set[int] = field(default_factory=set)
+    recorder_selected_page_closed: bool = False
 
 
 class SharedBrowserManager:
@@ -468,9 +474,18 @@ class SharedBrowserManager:
     async def _install_recorder(self,session):
         await session.ready.wait()
         if not session.context or session.closed.is_set(): return
+        # The runner replays actions against the FIRST page of a context.
+        # Capturing arbitrary other tabs into that workflow is misleading
+        # and could click a different element when replayed.
+        selected = (session.context.pages[0] if session.context.pages
+                    else await session.context.new_page())
         with self._lock:
             session.recorded=[]
             session.recorded_navigation_count=0
+            session.recorder_page=selected
+            session.recorder_ignored_pages={id(p) for p in session.context.pages
+                                            if p is not selected}
+            session.recorder_selected_page_closed=False
             session.recording=True
         if not session.recorder_page_hooked:
             def observe_page(page):
@@ -479,12 +494,21 @@ class SharedBrowserManager:
                     return
                 session.recorder_page_observers.add(identity)
                 def count_navigation():
-                    if session.recording:
-                        with self._lock:
+                    with self._lock:
+                        if session.recording and page is session.recorder_page:
                             session.recorded_navigation_count = min(
                                 session.recorded_navigation_count + 1, 1000)
+                def closing():
+                    session.recorder_page_observers.discard(identity)
+                    with self._lock:
+                        if session.recording and page is session.recorder_page:
+                            session.recording=False
+                            session.recorder_selected_page_closed=True
                 page.on("domcontentloaded", lambda *_: count_navigation())
-                page.on("close", lambda *_: session.recorder_page_observers.discard(identity))
+                page.on("close", lambda *_: closing())
+                with self._lock:
+                    if session.recording and page is not session.recorder_page:
+                        session.recorder_ignored_pages.add(identity)
             session.context.on("page", observe_page)
             for existing_page in session.context.pages:
                 observe_page(existing_page)
@@ -500,6 +524,11 @@ class SharedBrowserManager:
                 if frame is None or page is None or frame != page.main_frame:
                     return
                 with self._lock:
+                    if page is not session.recorder_page:
+                        # Content of another browser tab must never be mixed
+                        # into the first-tab replay plan.
+                        session.recorder_ignored_pages.add(id(page))
+                        return
                     if not append_recorded_event(session.recorded,payload):
                         return
                     action=session.recorded[-1]["action"]
@@ -527,8 +556,18 @@ class SharedBrowserManager:
             session=self._sessions.get(pid)
             if not session:
                 return None
-            return review_recording(session.recorded,
-                                    navigation_boundaries=session.recorded_navigation_count).public_summary()
+            report=review_recording(
+                session.recorded,
+                navigation_boundaries=session.recorded_navigation_count,
+                ignored_tabs=len(session.recorder_ignored_pages)
+            ).public_summary()
+            report["still_recording"]=bool(session.recording)
+            report["selected_tab_closed"]=session.recorder_selected_page_closed
+            if session.recorder_selected_page_closed:
+                report["warnings"].append(
+                    "The originally selected tab closed; re-record in the intended tab before replay."
+                )
+            return report
 
     @staticmethod
     def _error(exc,secret):

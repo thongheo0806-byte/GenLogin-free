@@ -49,6 +49,7 @@ class RecordingReviewTests(unittest.TestCase):
         result = review_recording(events,navigation_boundaries=3)
         self.assertEqual(result.redacted_fields,2)
         self.assertEqual(result.navigation_boundaries,3)
+        self.assertEqual(result.ignored_tabs,0)
         self.assertEqual(result.steps[1]["text"],"")
         self.assertEqual(result.steps[2]["value"],"REVIEW_OPTION")
         summary = result.public_summary()
@@ -66,6 +67,17 @@ class RecordingReviewTests(unittest.TestCase):
         self.assertTrue(append_recorded_event(events,{"action":"click","selector":"#press"}))
         self.assertEqual([i["action"] for i in events],["fill","click","click"])
         self.assertNotIn("secret",repr(events))
+
+    def test_other_tabs_are_warned_and_invalid_counts_rejected(self):
+        result=review_recording(
+            [{"action":"press","selector":"#search","key":"Enter"}],
+            ignored_tabs=2)
+        self.assertEqual(result.public_summary()["ignored_tabs"],2)
+        self.assertIn("2 other browser tab", " ".join(result.warnings))
+        self.assertNotIn("other browser tab", " ".join(review_recording([]).warnings))
+        for bad in (-1,True,1001,"2"):
+            with self.subTest(value=bad),self.assertRaises(ValueError):
+                review_recording([],ignored_tabs=bad)
 
     def test_rejects_oversized_and_invalid_legacy_recordings(self):
         with self.assertRaises(ValueError):

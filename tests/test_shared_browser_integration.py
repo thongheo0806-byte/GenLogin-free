@@ -289,6 +289,52 @@ class SharedBrowserRealTests(unittest.TestCase):
                         "Cancelling workflow must not close manually opened browser")
         self.manager.stop(profile.id)
 
+    def test_recorder_does_not_mix_tabs_and_only_records_safe_enter_key(self):
+        """Real Chromium: foreign tabs are excluded and never pollute replay."""
+        profile=self.store.save(Profile(
+            name="recorder-single-tab",browser="chromium",start_url=self.origin))
+        self.manager.start(profile.id)
+        self.assertTrue(eventually(lambda:(s:=self.manager._sessions.get(profile.id))
+                                  is not None and s.ready.is_set(),timeout=20))
+        self.manager.start_recording(profile.id)
+        async def demonstrate():
+            context=self.manager._sessions[profile.id].context
+            chosen=context.pages[0]
+            other=await context.new_page()
+            await other.goto(self.origin,wait_until="domcontentloaded")
+            await other.locator("#press").click()
+            await other.locator("#secret").fill("TAB_TWO_PRIVATE_SECRET")
+            await other.locator("#secret").dispatch_event("change")
+            await chosen.locator("#press").click()
+            await chosen.locator("#secret").press("Enter")
+        self.manager._submit(demonstrate()).result(timeout=30)
+        self.assertTrue(eventually(
+            lambda:len(self.manager.recorded_steps(profile.id))>=2,timeout=15))
+        self.manager.stop_recording(profile.id)
+        report=self.manager.recording_review(profile.id)
+        self.assertFalse(report["still_recording"])
+        self.assertGreaterEqual(report["ignored_tabs"],1)
+        self.assertEqual(report["navigation_boundaries"],0,
+                         "Opening another tab must not count as recorded-page navigation")
+        self.assertIn("other browser tab", " ".join(report["warnings"]))
+        steps=self.manager.recorded_steps(profile.id)
+        self.assertEqual(steps,[
+            {"action":"click","selector":"#press"},
+            {"action":"press","selector":"#secret","key":"Enter"}
+        ])
+        self.assertNotIn("TAB_TWO_PRIVATE_SECRET",repr(report)+repr(steps))
+        # Closing the selected tab cannot silently switch the recorder target
+        # to another already-open page.
+        self.manager.start_recording(profile.id)
+        async def close_selected():
+            await self.manager._sessions[profile.id].context.pages[0].close()
+        self.manager._submit(close_selected()).result(timeout=15)
+        review=self.manager.recording_review(profile.id)
+        self.assertFalse(review["still_recording"])
+        self.assertTrue(review["selected_tab_closed"])
+        self.assertIn("selected tab closed", " ".join(review["warnings"]))
+        self.manager.stop(profile.id)
+
     def test_recorder_rejects_page_injection_and_reviews_navigation_safely(self):
         """Untrusted page binding cannot inject workflow commands or secret values."""
         profile=self.store.save(Profile(name="recorded-review",browser="chromium",start_url=self.origin))
