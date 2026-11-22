@@ -63,3 +63,21 @@ Only after all necessary gates are demonstrated can CI be changed to produce a W
 - [ ] Direct, legally authorized comparison with pinned GenLogin/Titan binary. This evidence is not available, so the release HOLD remains.
 
 See `FEATURES_050.md`, `TEAM_SYNC_OPERATIONS.md`, and `TITAN_VERIFICATION_PROTOCOL.md` for precise limitations.
+
+## 2026-11-22 reproducible Windows Batch SQLite cleanup gate
+
+Windows main CI run `45004558299` encountered a `WinError 32` in
+`test_batch.BatchTests.test_redacts_workflow_values_and_does_not_keep_payload`:
+the batch *result* was already terminal, but a background batch worker had
+not yet left its `finally` block and closed its thread-owned SQLite
+connection when `TemporaryDirectory.cleanup()` started.
+
+The tests must now call the existing `BatchRunner.wait(batch_id)`
+thread-join/cleanup barrier **before** deleting their Windows test databases.
+This is applied consistently to synthetic Batch tests, the local API Batch
+test teardown and real Chromium batch integration; no arbitrary sleep,
+exception swallowing or loose file-handle retry is an acceptable substitute.
+A terminal automation outcome alone does not prove its worker resources
+have been released. Regression must pass in a new Windows PR run and on
+`main` after merge. **This remains a quality fix, not full feature parity
+or permission to create EXE artifacts.**
