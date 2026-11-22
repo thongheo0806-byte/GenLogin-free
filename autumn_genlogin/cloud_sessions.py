@@ -64,31 +64,71 @@ class CloudSessionHandoff:
     def __init__(self, client):
         self.client = client
 
-    def upload(self, team_id: str, source: Path, team_passphrase: str) -> str:
+    def upload(self, team_id: str, source: Path, team_passphrase: str,
+               *, session_id: str | None = None) -> str:
+        """Publish or resume a specific encrypted handoff.
+
+        The optional UUID must be saved *before* an upload starts. Retrying
+        compares every existing remote chunk with the original encrypted
+        backup. An incompatible object, changed source or revoked UUID fails
+        closed without overwriting any server document.
+        """
         source = Path(source)
         size = _file_size(source)
         raw = source.read_bytes()
         if len(raw) != size:
             raise ValueError("Backup changed during upload preparation")
         # Intentionally no identity, URL, username, cookies or OS path metadata.
-        ident = str(uuid4())
+        resumable = session_id is not None
+        ident = _id(session_id) if resumable else str(uuid4())
         checksum = hashlib.sha256(raw).hexdigest()
         total = (len(raw) + PART_SIZE - 1) // PART_SIZE
         if total < 1 or total > MAX_PARTS:
             raise ValueError("Too many archive parts")
-        # Creation of the manifest is the final publish point. Failed prior
-        # chunk uploads leave unreachable encrypted orphan documents, not
-        # a visible/valid archive. No automatic retry or replay.
+        manifest = {"format":MANIFEST_FORMAT,"session_id":ident,
+                    "size":size,"parts":total,"sha256":checksum}
+
+        existing_manifest = False
+        if resumable:
+            # Manifest is published LAST, only after the complete archive.
+            # A same-ID retry must NOT overwrite a different backup or
+            # accept an inconsistent already-published archive.
+            revision, previous = self.client.pull(
+                team_id, _name(ident), team_passphrase)
+            if revision not in (0, 1):
+                raise ValueError("Unexpected session manifest revision")
+            if revision == 1:
+                if previous != manifest:
+                    raise ValueError("Session handoff ID belongs to a different backup")
+                existing_manifest = True
+            elif previous is not None:
+                raise ValueError("Unexpected unpublished session manifest")
+
         for index in range(total):
             piece = raw[index*PART_SIZE:(index+1)*PART_SIZE]
+            expected = _chunk_doc(ident,index,piece)
+            if resumable:
+                revision, previous = self.client.pull(
+                    team_id, _name(ident,index), team_passphrase)
+                if revision not in (0, 1):
+                    raise ValueError("Unexpected session part revision")
+                if revision == 1:
+                    if previous != expected:
+                        raise ValueError("Session handoff ID contains an incompatible part")
+                    # A matching part was already authenticated by the
+                    # team passphrase; never create a conflicting revision.
+                    continue
+                if previous is not None or existing_manifest:
+                    raise ValueError("Published session archive has missing parts")
             revision = self.client.push(
-                team_id, _name(ident,index), 0,
-                _chunk_doc(ident,index,piece), team_passphrase
+                team_id, _name(ident,index), 0, expected, team_passphrase
             )
             if revision != 1:
                 raise ValueError("Unexpected part revision")
-        manifest = {"format":MANIFEST_FORMAT,"session_id":ident,
-                    "size":size,"parts":total,"sha256":checksum}
+        if existing_manifest:
+            return ident
+        # The manifest is the final publish point. An interrupted upload
+        # remains unpublished; retry with the same UUID and unchanged file.
         revision = self.client.push(team_id,_name(ident),0,manifest,team_passphrase)
         if revision != 1:
             raise ValueError("Unexpected manifest revision")
