@@ -1,6 +1,6 @@
 # Local Miniapps catalog: reviewed JSON templates only
 
-**Development status. Not a remote app store, not signed plugins, and not GenLogin MiniApps parity.**
+**Development status. Supports manually pinned Ed25519 signed JSON templates, but NOT a remote app store, third-party code plugins, or GenLogin MiniApps parity.**
 EXE packaging remains HOLD.
 
 ## User journey
@@ -41,8 +41,7 @@ EXE packaging remains HOLD.
 
 ## Missing features / acceptance
 
-There is **no** online discovery, app ratings, publisher signing,
-revocation, automatic updates, nested subworkflows, per-app permissions
+There is **no** online discovery, app ratings, verified real-world publisher identity, centralized key revocation, automatic updates, nested subworkflows, per-app permissions
 enforced by network interception, third-party plugin code or GenLogin
 MiniApps ABI compatibility. A complete marketplace will require a
 publisher trust and update model, dependency licensing, sandboxing,
@@ -52,3 +51,57 @@ user consent, checksum pinning, rollback and independent Windows QA.
 import limits, conflicting updates and persistent catalog. Tkinter CI
 smoke checks Miniapps tab rendering with a synthetic entry. No external
 website is visited as part of these tests.
+
+
+## Optional cryptographic publisher-key continuity (2026-11-22)
+
+Miniapps now support two local file formats:
+
+- `AutumnGenLogin/miniapp-1`: existing **UNSIGNED** JSON templates. Still
+  manually importable and editable after the original explicit review.
+- `AutumnGenLogin/signed-miniapp-1`: exact envelope fields
+  `format`, `manifest`, `public_key` (canonical base64 of 32 raw
+  Ed25519 bytes), and `signature` (canonical base64 of 64 Ed25519 bytes).
+  Its domain-separated signature covers a canonically encoded, validated
+  workflow manifest, not arbitrary third-party program code.
+
+The new **Trust publisher key** action accepts a public key and local label.
+It shows the SHA-256 key fingerprint for **out-of-band verification** before
+the user consents. Import of a signed package whose exact key is not trusted,
+whose signature fails, or whose name has been previously pinned to another
+key is rejected atomically. The GUI displays **trusted**, **unsigned** or
+**untrusted** on every row; a package signed by a revoked local key cannot
+be loaded even through the library's `get` method.
+
+**Important:** A digital signature does not certify that a developer is
+reputable, legally authorized or that a workflow is safe. The publisher
+could deliberately sign a harmful selector/action. A local SHA-256 key
+fingerprint is not an independent certificate of the publisher's identity.
+Never trust a new key solely because it appears inside a signed package.
+There is no online trust/revocation authority, signed Web Store package
+format, automatic upgrades, code-based miniapps or Titan equivalence.
+
+### Developer signing helper (manual and local)
+
+With OpenSSL installed, generate a private signing key **outside your
+Git repository and cloud-synchronized folders**:
+
+```powershell
+openssl genpkey -algorithm ED25519 -out C:\private\miniapp-publisher.pem
+python -m autumn_genlogin.miniapp_signatures public C:\private\miniapp-publisher.pem
+python -m autumn_genlogin.miniapp_signatures sign examples/miniapps/inspect-example-com.json C:\private\miniapp-publisher.pem inspect-signed.json
+```
+
+The `public` operation prints only the raw public key and its fingerprint.
+Share the public key and fingerprint through separate, trusted channels.
+Never publish or upload your private PEM. `sign` writes a NEW signed JSON
+file with exclusive creation and refuses to overwrite an existing file.
+A user manually trusts the public key in Miniapps before selecting **Import
+JSON** for the signed package. Import itself never launches a browser.
+
+Existing SQLite catalog rows remain compatible: only two additive tables,
+`miniapp_publishers` and `miniapp_attestations`, are created. Removing
+a trusted key leaves previously imported signed templates visible, marked
+`untrusted`, but blocks loading them until the exact key is trusted again.
+Deleting a Miniapp removes its signature attestation; private signing
+keys are NEVER stored in the application's SQLite database.
