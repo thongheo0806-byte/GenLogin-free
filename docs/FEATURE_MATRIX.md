@@ -129,3 +129,10 @@ The [official public release notes](https://genlogin.com/release-notes) currentl
 - A user first exports a STOPPED profile into a separate password-encrypted `.aglb` backup. The opt-in Cloud Session Handoff code reads **only** that encrypted file, splits it into 256 KiB pieces (16 MiB max, up to 64 pieces), encrypts each piece again using the shared TEAM passphrase, publishes all parts, then an authenticated manifest with hash and size **last**. An interrupted upload cannot appear as a complete manifest.
 - Download requires team membership and the shared passphrase, checks every chunk's document format and revision plus complete SHA-256/size and writes a new **still-encrypted** `.aglb` file using exclusive creation. Restore remains a separate operation using the backup passphrase and installs a new local UUID. Never overwrite active profiles or transfer vault passwords.
 - This is not full GenLogin cloud session sync, not automatic sync, not large-profile support, not durable streaming/resume and not safe for public internet without audited HTTPS reverse proxy, quotas, retention and disaster recovery. Orphan encrypted parts after a crashed upload are not automatically garbage-collected. See `CLOUD_SESSION_HANDOFF.md`.
+
+
+## 2026-11-22 Recorder tab-scope correction and GUI timer shutdown
+
+- Recorder is restricted to one selected **first tab** whose Playwright selectors are used by the replay runner. Unrelated tabs are ignored and disclosed in the review; page loads from other tabs no longer count as selected-page navigation. This prevents a single recorded draft silently mixing browser tabs, but **does not implement multi-tab recording**.
+- Capture records only the semantic Enter/Escape key events on eligible non-password text/control elements. Typed values, arbitrary keys, URL fragments and iframe actions are never accepted. Closing selected tab aborts recording; a draft cannot be imported until recording has stopped.
+- Windows/Tk UI cancellation now explicitly removes pending poll and search timer callbacks on root teardown, addressing a warning surfaced during OS-level pywinauto keyboard acceptance. No EXE is built or released.
