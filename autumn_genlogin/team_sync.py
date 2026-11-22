@@ -223,6 +223,11 @@ class TeamHub:
         with closing(self._db()) as c:
             c.execute("BEGIN IMMEDIATE")
             try:
+                current=c.execute(
+                    "SELECT role FROM members WHERE team_id=? AND user_id=?",
+                    (team_id,actor)).fetchone()
+                if current is None or ROLE_LEVEL[current["role"]] < ROLE_LEVEL["editor"]:
+                    raise HubError(403,"Team access denied")
                 row=c.execute("SELECT revision FROM documents WHERE team_id=? AND name=?",(team_id,name)).fetchone()
                 actual=row["revision"] if row else 0
                 if actual != revision: raise HubError(409,"Revision conflict; pull before overwriting")
@@ -265,6 +270,11 @@ class TeamHub:
         with closing(self._db()) as c:
             c.execute("BEGIN IMMEDIATE")
             try:
+                current=c.execute(
+                    "SELECT role FROM members WHERE team_id=? AND user_id=?",
+                    (team_id,actor)).fetchone()
+                if current is None or ROLE_LEVEL[current["role"]] < ROLE_LEVEL["admin"]:
+                    raise HubError(403,"Team access denied")
                 c.execute("INSERT OR IGNORE INTO revoked_sessions VALUES(?,?,?)",
                           (team_id,canonical,time.time()))
                 removed=c.execute(
