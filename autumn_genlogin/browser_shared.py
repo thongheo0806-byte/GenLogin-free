@@ -60,7 +60,7 @@ RECORD_SCRIPT = r"""(() => {
   document.addEventListener('keydown', function(ev) {
     if (!['Enter','Escape'].includes(ev.key) || !ev.target || !ev.target.closest) return;
     // Never record keystrokes on credentials, email, telephone or number inputs.
-    const el=ev.target.closest('button,a,[role=button],textarea,input[type=search],input[type=text]');
+    const el=ev.target.closest('button,a,[role=button],textarea,input:not([type]),input[type=search],input[type=text]');
     if (!el || el.closest('input[type=password]')) return;
     const s=selector(el);
     if (s) send({action:'press',selector:s,key:ev.key});
