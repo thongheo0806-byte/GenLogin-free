@@ -118,6 +118,62 @@ class CloudSessionHandoffHTTPTests(unittest.TestCase):
         self.assertEqual(size,extra.stat().st_size)
         self.assertEqual(target.read_bytes(),extra.read_bytes())
 
+    def test_owner_can_revoke_archive_and_tombstone_prevents_resurrection(self):
+        ident=CloudSessionHandoff(self.owner).upload(self.team,self.source,self.SHARED)
+        before=self.owner.pull(self.team,_name(ident),self.SHARED)
+        self.assertEqual(before[0],1)
+        with self.assertRaises(HubError) as viewer_denied:
+            self.viewer.revoke_session(self.team,ident)
+        self.assertEqual(viewer_denied.exception.status,403)
+        self.owner.set_member(self.team,"viewer","editor")
+        with self.assertRaises(HubError) as editor_denied:
+            self.viewer.revoke_session(self.team,ident)
+        self.assertEqual(editor_denied.exception.status,403)
+        result=self.owner.revoke_session(self.team,ident)
+        self.assertEqual(result["status"],"revoked")
+        self.assertGreaterEqual(result["deleted_documents"],2)
+        with closing(sqlite3.connect(self.root/"team.sqlite3")) as conn:
+            remaining=conn.execute(
+                "SELECT COUNT(*) FROM documents WHERE team_id=? AND name LIKE ?",
+                (self.team,"session-"+ident+"-%")).fetchone()[0]
+            tombstone=conn.execute(
+                "SELECT COUNT(*) FROM revoked_sessions WHERE team_id=? AND session_id=?",
+                (self.team,ident)).fetchone()[0]
+        self.assertEqual(remaining,0)
+        self.assertEqual(tombstone,1)
+        self.assertEqual(self.owner.revoke_session(self.team,ident)["deleted_documents"],0)
+        with self.assertRaises(HubError) as blocked:
+            self.viewer.pull(self.team,_name(ident),self.SHARED)
+        self.assertEqual(blocked.exception.status,410)
+        with self.assertRaises(HubError) as republish:
+            self.owner.push(self.team,_name(ident,0),0,
+                {"format":"AutumnGenLogin/session-handoff-chunk-1","data":"x"},
+                self.SHARED)
+        self.assertEqual(republish.exception.status,410)
+        with self.assertRaises(HubError) as resurrect_manifest:
+            self.owner.push(self.team,_name(ident),0,
+                {"format":"AutumnGenLogin/session-handoff-manifest-1"},
+                self.SHARED)
+        self.assertEqual(resurrect_manifest.exception.status,410)
+        target=self.root/"revoked-copy.aglb"
+        with self.assertRaises(HubError) as download:
+            CloudSessionHandoff(self.viewer).download(self.team,ident,target,self.SHARED)
+        self.assertEqual(download.exception.status,410)
+        self.assertFalse(target.exists())
+
+    def test_only_admin_or_owner_can_revoke_with_strict_uuid_validation(self):
+        self.owner.set_member(self.team,"viewer","admin")
+        ident=CloudSessionHandoff(self.owner).upload(self.team,self.source,self.SHARED)
+        self.assertGreaterEqual(self.viewer.revoke_session(self.team,ident)["deleted_documents"],2)
+        with self.assertRaises(ValueError):
+            self.owner.revoke_session(self.team,"../unsafe")
+        with self.assertRaises(ValueError):
+            self.owner.revoke_session(self.team,ident.upper())
+        with closing(sqlite3.connect(self.root/"team.sqlite3")) as conn:
+            self.assertEqual(conn.execute(
+                "SELECT COUNT(*) FROM revoked_sessions WHERE team_id=? AND session_id=?",
+                (self.team,ident)).fetchone()[0],1)
+
     def test_oversized_or_invalid_session_archive_rejected_without_upload(self):
         bad=self.root/"bad.aglb"
         bad.write_bytes(b"PLAINTEXT-DO-NOT-UPLOAD")
