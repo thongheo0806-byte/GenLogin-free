@@ -85,10 +85,35 @@ def sign_package(manifest: object, private_key: Ed25519PrivateKey) -> dict:
     }
 
 
+def _load_pem_key(path: Path) -> Ed25519PrivateKey:
+    if path.is_symlink() or not path.is_file() or path.stat().st_size>8192:
+        raise ValueError("Key must be an ordinary private PEM file <=8 KiB")
+    key=serialization.load_pem_private_key(path.read_bytes(),password=None)
+    if not isinstance(key,Ed25519PrivateKey):
+        raise ValueError("Publisher signing key must use Ed25519")
+    return key
+
+
 def main() -> int:
-    """Explicit local publisher signing helper; never generates or prints a key."""
+    """Local signer or public-key exporter. Private PEM is never printed."""
+    if len(sys.argv)==3 and sys.argv[1]=="public":
+        try:
+            key=_load_pem_key(Path(sys.argv[2]))
+            public=key.public_key().public_bytes(
+                encoding=serialization.Encoding.Raw,
+                format=serialization.PublicFormat.Raw,
+            )
+            b64=base64.b64encode(public).decode("ascii")
+            print("Public Ed25519 key (base64): "+b64)
+            print("SHA-256 fingerprint: "+hashlib.sha256(public).hexdigest())
+            return 0
+        except (OSError,ValueError,TypeError):
+            print("Public-key export failed; check the local PEM type and permissions.")
+            return 1
     if len(sys.argv)!=5 or sys.argv[1]!="sign":
         print("Usage: python -m autumn_genlogin.miniapp_signatures "
+              "public private_key.pem\n"
+              "or: python -m autumn_genlogin.miniapp_signatures "
               "sign manifest.json private_key.pem signed.json")
         return 2
     _,_,source_name,key_name,dest_name=sys.argv
@@ -97,23 +122,20 @@ def main() -> int:
         if (source.is_symlink() or not source.is_file()
                 or source.stat().st_size>65536):
             raise ValueError("Manifest must be an ordinary JSON file <=64 KiB")
-        if (key.is_symlink() or not key.is_file() or key.stat().st_size>8192):
-            raise ValueError("Key must be an ordinary private PEM file <=8 KiB")
         manifest=json.loads(source.read_text(encoding="utf-8"))
-        private=serialization.load_pem_private_key(key.read_bytes(),password=None)
+        private=_load_pem_key(key)
         signed=sign_package(manifest,private)
         output=json.dumps(signed,ensure_ascii=False,indent=2)+"\n"
         if len(output.encode("utf-8"))>65536:
             raise ValueError("Signed Miniapp package exceeds 64 KiB")
         with dest.open("x",encoding="utf-8") as fd:
             fd.write(output)
-    except (OSError,UnicodeError,ValueError,TypeError) as exc:
+    except (OSError,UnicodeError,ValueError,TypeError):
         # Never print input file text, key bytes or secrets.
-        print("Signing failed: "+type(exc).__name__)
+        print("Signing failed; check JSON, key format, size and output path.")
         return 1
     print("Signed Miniapp written; verify publisher key fingerprint out of band.")
     return 0
-
 
 if __name__=="__main__":
     raise SystemExit(main())
