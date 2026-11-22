@@ -80,3 +80,22 @@ unlocked, accessible interactive desktop and human-reviewed results.
 - Windows GUI pywinauto job: actual Windows HWND state.
 - All other original Windows CI lanes must continue to pass, including
   Chrome/Edge, Firefox/WebKit, old Windows environment upgrade.
+
+## 2026-11-22 real Win32 input acceptance expansion
+
+The Windows pywinauto job now has a second end-to-end test beyond
+minimize/restore. It enumerates the **real** top-level Tk app, sends a
+Win32 mouse click to the visible **+ New profile** button (using its
+live screen coordinates), checks the OS exposes a **Create profile**
+dialog, uses actual Windows keyboard input to replace the synthetic
+profile name, and clicks **Save profile**. It then checks the profile
+appeared in SQLite and the visible Treeview. The test does not call
+`App.new_profile`/`ProfileEditor.save` directly.
+
+This is a basic interaction regression, not a production accessibility
+certification or equivalent to auditing every control/tab/window for
+keyboard-only navigation, high DPI, multiple monitors, localization,
+high-contrast mode or screen readers. It requires an interactive Windows
+desktop session. If a hosted runner cannot inject physical input,
+CI must report that limitation rather than silently counting an
+unexecuted test as a success.
