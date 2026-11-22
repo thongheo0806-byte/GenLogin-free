@@ -1,10 +1,8 @@
-"""Reviewed, declarative local miniapp catalog. Never executes imported code.
+"""Reviewed, declarative local Miniapp catalog with optional pinned signatures.
 
-Miniapps are small reusable JSON workflow *drafts* with an immutable SHA-256
-ID. Importing is not running. A GUI preview and explicit user confirmation
-are required before a workflow is loaded into the existing validated editor.
-No remote marketplace, arbitrary Python/JS, external package installs or
-automatic credential copying.
+Import never runs a workflow. An Ed25519 signature proves possession of a
+manually trusted key, not the publisher's real-world identity or suitability
+of a workflow. Unsigned imports remain visibly unverified legacy drafts.
 """
 from __future__ import annotations
 
@@ -15,10 +13,12 @@ import hashlib
 import json
 from pathlib import Path
 import re
-import sqlite3
 from urllib.parse import urlsplit
 
 from .models import validated_steps
+from .miniapp_signatures import (
+    SIGNED_FORMAT, publisher_fingerprint, verify_signed_package,
+)
 
 FORMAT = "AutumnGenLogin/miniapp-1"
 MAX_PACKAGE_BYTES = 65536
@@ -91,6 +91,8 @@ class MiniAppRecord:
     steps: int
     origins: tuple[str,...]
     installed_at_utc: str
+    signature_status: str = "unsigned"
+    publisher_fingerprint: str = ""
 
 
 class MiniAppLibrary:
@@ -107,6 +109,51 @@ class MiniAppLibrary:
                 installed_at_utc TEXT NOT NULL,
                 UNIQUE(name,version)
             )""")
+            # Additive tables preserve older local catalog databases.
+            conn.execute("""CREATE TABLE IF NOT EXISTS miniapp_publishers (
+                fingerprint TEXT PRIMARY KEY,
+                label TEXT NOT NULL,
+                public_key TEXT NOT NULL
+            )""")
+            conn.execute("""CREATE TABLE IF NOT EXISTS miniapp_attestations (
+                miniapp_id TEXT PRIMARY KEY,
+                fingerprint TEXT NOT NULL,
+                public_key TEXT NOT NULL,
+                signature TEXT NOT NULL,
+                FOREIGN KEY(miniapp_id) REFERENCES miniapps(id) ON DELETE CASCADE
+            )""")
+
+    def trust_publisher(self, label: str, public_key: str) -> str:
+        """User explicitly pins a 32-byte Ed25519 public key after review."""
+        label=_field("publisher label",label,80)
+        fingerprint=publisher_fingerprint(public_key)
+        with self.store._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row=conn.execute("SELECT public_key FROM miniapp_publishers WHERE fingerprint=?",
+                             (fingerprint,)).fetchone()
+            if row is not None and row["public_key"]!=public_key:
+                raise ValueError("Publisher key fingerprint conflict")
+            if row is None:
+                if conn.execute("SELECT COUNT(*) FROM miniapp_publishers").fetchone()[0]>=100:
+                    raise ValueError("Maximum 100 trusted Miniapp signing keys")
+                conn.execute("INSERT INTO miniapp_publishers VALUES(?,?,?)",
+                             (fingerprint,label,public_key))
+        return fingerprint
+
+    def list_publishers(self) -> list[dict]:
+        with self.store._connect() as conn:
+            return [dict(row) for row in conn.execute(
+                "SELECT fingerprint,label,public_key FROM miniapp_publishers "
+                "ORDER BY label,fingerprint")]
+
+    def untrust_publisher(self, fingerprint: str) -> None:
+        if not isinstance(fingerprint,str) or not _IDENT.fullmatch(fingerprint):
+            raise ValueError("Invalid publisher fingerprint")
+        with self.store._connect() as conn:
+            result=conn.execute(
+                "DELETE FROM miniapp_publishers WHERE fingerprint=?",(fingerprint,))
+            if result.rowcount!=1:
+                raise KeyError("Trusted Miniapp publisher key not found")
 
     def install_json(self, source: Path) -> MiniAppRecord:
         source=Path(source)
@@ -118,28 +165,65 @@ class MiniAppLibrary:
             doc=json.loads(source.read_text(encoding="utf-8"))
         except (UnicodeError,ValueError) as exc:
             raise ValueError("Invalid UTF-8 JSON miniapp") from exc
+        if isinstance(doc,dict) and doc.get("format")==SIGNED_FORMAT:
+            return self.install_signed(doc)
         return self.install(doc)
 
     def install(self, manifest: object) -> MiniAppRecord:
-        checked=validate_miniapp(manifest)
+        return self._install_checked(validate_miniapp(manifest))
+
+    def install_signed(self, package: object) -> MiniAppRecord:
+        manifest,fingerprint,public_key,signature=verify_signed_package(package)
+        if len(json.dumps(package,ensure_ascii=False).encode("utf-8"))>MAX_PACKAGE_BYTES:
+            raise ValueError("Signed Miniapp package exceeds 64 KiB")
+        # Verifying a signature alone never implicitly trusts its key.
+        return self._install_checked(manifest,(fingerprint,public_key,signature))
+
+    def _install_checked(self, checked: dict, signer: tuple | None = None) -> MiniAppRecord:
         raw=json.dumps(checked,separators=(",",":"),sort_keys=True,ensure_ascii=False)
-        if len(raw.encode("utf-8")) > MAX_PACKAGE_BYTES:
+        if len(raw.encode("utf-8"))>MAX_PACKAGE_BYTES:
             raise ValueError("Miniapp manifest exceeds 64 KiB")
         ident=hashlib.sha256(raw.encode("utf-8")).hexdigest()
         now=datetime.now(timezone.utc).isoformat(timespec="seconds")
         with self.store._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
+            existing_signature=None
+            if signer is not None:
+                fingerprint,public_key,signature=signer
+                trusted=conn.execute(
+                    "SELECT public_key FROM miniapp_publishers WHERE fingerprint=?",
+                    (fingerprint,)).fetchone()
+                if trusted is None or trusted["public_key"]!=public_key:
+                    raise ValueError("Miniapp signing key is not explicitly trusted")
+                prior=conn.execute(
+                    "SELECT DISTINCT a.fingerprint FROM miniapp_attestations a "
+                    "JOIN miniapps m ON m.id=a.miniapp_id WHERE m.name=?",
+                    (checked["name"],)).fetchall()
+                if any(row["fingerprint"]!=fingerprint for row in prior):
+                    raise ValueError("Miniapp name is already pinned to another publisher key")
+                existing_signature=conn.execute(
+                    "SELECT fingerprint,public_key,signature FROM miniapp_attestations "
+                    "WHERE miniapp_id=?",(ident,)).fetchone()
+                if existing_signature is not None and (
+                    dict(existing_signature) != {"fingerprint":fingerprint,
+                                                 "public_key":public_key,
+                                                 "signature":signature}
+                ):
+                    raise ValueError("Miniapp signature identity conflict")
             exists=conn.execute("SELECT id FROM miniapps WHERE name=? AND version=?",
                                 (checked["name"],checked["version"])).fetchone()
             if exists:
-                if exists["id"] != ident:
+                if exists["id"]!=ident:
                     raise ValueError("An incompatible miniapp already uses this name/version")
-            elif conn.execute("SELECT COUNT(*) FROM miniapps").fetchone()[0] >= MAX_APPS:
+            elif conn.execute("SELECT COUNT(*) FROM miniapps").fetchone()[0]>=MAX_APPS:
                 raise ValueError("Maximum 100 installed miniapp templates")
             else:
                 conn.execute("INSERT INTO miniapps VALUES(?,?,?,?,?,?,?)",
                              (ident,checked["name"],checked["version"],
                               checked["category"],checked["description"],raw,now))
+            if signer is not None and existing_signature is None:
+                conn.execute("INSERT INTO miniapp_attestations VALUES(?,?,?,?)",
+                             (ident,fingerprint,public_key,signature))
         return self._record(ident)
 
     def _record(self, ident: str) -> MiniAppRecord:
@@ -147,16 +231,35 @@ class MiniAppLibrary:
             raise ValueError("Invalid miniapp ID")
         with self.store._connect() as conn:
             row=conn.execute("SELECT * FROM miniapps WHERE id=?",(ident,)).fetchone()
-        if row is None:
-            raise KeyError("Miniapp not found")
-        manifest=validate_miniapp(json.loads(row["manifest"]))
-        canonical=json.dumps(manifest,sort_keys=True,separators=(",",":"),ensure_ascii=False)
-        if hashlib.sha256(canonical.encode("utf-8")).hexdigest() != ident:
-            raise ValueError("Stored miniapp manifest integrity check failed")
-        return MiniAppRecord(ident,manifest["name"],manifest["version"],
-                             manifest["category"],manifest["description"],
-                             len(manifest["workflow"]),scope_of(manifest),
-                             row["installed_at_utc"])
+            if row is None:
+                raise KeyError("Miniapp not found")
+            manifest=validate_miniapp(json.loads(row["manifest"]))
+            canonical=json.dumps(manifest,sort_keys=True,separators=(",",":"),ensure_ascii=False)
+            if hashlib.sha256(canonical.encode("utf-8")).hexdigest()!=ident:
+                raise ValueError("Stored miniapp manifest integrity check failed")
+            status="unsigned"
+            fingerprint=""
+            attestation=conn.execute(
+                "SELECT fingerprint,public_key,signature FROM miniapp_attestations "
+                "WHERE miniapp_id=?",(ident,)).fetchone()
+            if attestation is not None:
+                fingerprint=attestation["fingerprint"]
+                candidate={"format":SIGNED_FORMAT,"manifest":manifest,
+                           "public_key":attestation["public_key"],
+                           "signature":attestation["signature"]}
+                _,verified,_,_=verify_signed_package(candidate)
+                if verified!=fingerprint:
+                    raise ValueError("Miniapp signature trust metadata was changed")
+                trusted=conn.execute(
+                    "SELECT public_key FROM miniapp_publishers WHERE fingerprint=?",
+                    (fingerprint,)).fetchone()
+                status=("trusted" if trusted is not None
+                        and trusted["public_key"]==attestation["public_key"]
+                        else "untrusted")
+            return MiniAppRecord(ident,manifest["name"],manifest["version"],
+                                 manifest["category"],manifest["description"],
+                                 len(manifest["workflow"]),scope_of(manifest),
+                                 row["installed_at_utc"],status,fingerprint)
 
     def list(self) -> list[MiniAppRecord]:
         with self.store._connect() as conn:
