@@ -27,3 +27,14 @@ This is a **self-hosted opt-in metadata collaboration service**, not a preconfig
 ## Opt-in manual encrypted archive handoff (development)
 
 The Team sync tab now includes explicit **Upload encrypted session backup** and **Download encrypted session backup** actions. These are separate from the metadata/workflows sync contract above: archive transfers are encrypted twice, uploaded in bounded 256 KiB chunks with an immutable final manifest and downloaded only to a new encrypted file. Team owners/editors may upload, viewers may download. Do not claim that the regular profile-metadata document now includes cookie/session data; it still strictly excludes that material. No automatic session transfer or remote browser folder synchronization exists. Review [CLOUD_SESSION_HANDOFF.md](CLOUD_SESSION_HANDOFF.md) before using sensitive data.
+
+## Archive revocation security boundary (2026-11-22)
+
+Owner/admin can use **Revoke team archive** to delete a published
+encrypted .aglb handoff from TeamHub. Viewer/editor permissions are
+insufficient. Server remembers a tombstone so the same UUID cannot be
+re-uploaded. This is atomic at the SQLite storage layer and is tested
+with real localhost HTTP requests. Deleting a Hub archive **does not
+delete previously downloaded .aglb files or invalidate site cookies**.
+Only services that issued those sessions can revoke them. See
+[CLOUD_SESSION_HANDOFF.md](CLOUD_SESSION_HANDOFF.md).

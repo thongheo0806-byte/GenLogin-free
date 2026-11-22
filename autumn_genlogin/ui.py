@@ -1056,7 +1056,9 @@ class App:
         ttk.Button(archive_row,text="Upload encrypted session backup",
                    command=self.cloud_upload_session).pack(side="left",padx=(0,9))
         ttk.Button(archive_row,text="Download encrypted session backup",
-                   command=self.cloud_download_session).pack(side="left")
+                   command=self.cloud_download_session).pack(side="left",padx=(0,9))
+        ttk.Button(archive_row,text="Revoke team archive",
+                   command=self.cloud_revoke_session).pack(side="left")
         self.cloud_status=tk.StringVar(value="Not signed in")
         ttk.Label(frame,textvariable=self.cloud_status).pack(anchor="w")
         ttk.Label(frame,text="Remote team roles: owner, admin, editor, viewer. Push uses revision checks to reject conflicts.",style="Muted.TLabel").pack(anchor="w",pady=8)
@@ -1138,6 +1140,34 @@ class App:
                 "to create a NEW local profile. No existing profile is overwritten.",
                 parent=self.root)
         self._cloud_action(task,finished)
+
+    def cloud_revoke_session(self):
+        if not self.cloud:
+            return messagebox.showinfo("Team sync","Log in first",parent=self.root)
+        ident=simpledialog.askstring("Revoke published encrypted session",
+                 "Paste the archived handoff UUID to revoke:",parent=self.root)
+        if not ident:
+            return
+        team_id=self.cloud_fields["team_id"].get().strip()
+        if not messagebox.askyesno("PERMANENT encrypted archive revocation",
+                "Only a team OWNER or ADMIN can revoke this encrypted archive.\n\n"
+                "The Hub will permanently remove its encrypted parts and "
+                "manifest and refuse publishing under this UUID again.\n"
+                "This action cannot be undone.\n\n"
+                "IMPORTANT: copies previously downloaded by other members "
+                "CANNOT be recovered or deleted remotely. Continue?",
+                parent=self.root):
+            return
+        def done(result):
+            deleted=result["deleted_documents"]
+            self.cloud_status.set(
+                f"Archive revoked on hub; {deleted} encrypted documents removed")
+            messagebox.showinfo("Hub archive revoked",
+                f"The Hub deleted {deleted} encrypted documents and blocked "
+                "this handoff ID from being reused.\n\n"
+                "Previously downloaded files are NOT revoked.",
+                parent=self.root)
+        self._cloud_action(lambda:self.cloud.revoke_session(team_id,ident),done)
 
     def cloud_register(self):
         values={k:v.get() for k,v in self.cloud_fields.items()}

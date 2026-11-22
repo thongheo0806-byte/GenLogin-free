@@ -21,7 +21,7 @@ import urllib.request
 from contextlib import closing
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 FORMAT = "AutumnGenLogin/encrypted-1"
 MAX_DOCUMENT = 1024 * 1024
@@ -29,7 +29,7 @@ ROLE_LEVEL = {"viewer":0, "editor":1,"admin":2,"owner":3}
 # Whitelist immutable, opaque session-archive parts and the final manifest.
 # No arbitrary document names, paths, query strings or token-like values.
 _SESSION_NAME = re.compile(
-    r"session-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-(?:[0-9]{2}|manifest)\Z"
+    r"session-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})-(?:[0-9]{2}|manifest)\Z"
 )
 
 
@@ -104,6 +104,9 @@ class TeamHub:
                     role TEXT NOT NULL,PRIMARY KEY(team_id,user_id));
                 CREATE TABLE IF NOT EXISTS documents(team_id TEXT NOT NULL,name TEXT NOT NULL,
                     revision INTEGER NOT NULL,blob TEXT NOT NULL,PRIMARY KEY(team_id,name));
+                CREATE TABLE IF NOT EXISTS revoked_sessions(team_id TEXT NOT NULL,
+                    session_id TEXT NOT NULL,revoked_at REAL NOT NULL,
+                    PRIMARY KEY(team_id,session_id));
             """)
 
     def _db(self):
@@ -199,6 +202,11 @@ class TeamHub:
         self.require(actor,team_id)
         if not _allowed_document_name(name): raise HubError(400,"Invalid document type")
         with closing(self._db()) as c:
+            match=_SESSION_NAME.fullmatch(name) if name.startswith("session-") else None
+            if match and c.execute(
+                "SELECT 1 FROM revoked_sessions WHERE team_id=? AND session_id=?",
+                (team_id,match.group(1))).fetchone():
+                raise HubError(410,"Encrypted session handoff revoked")
             row=c.execute("SELECT revision,blob FROM documents WHERE team_id=? AND name=?",(team_id,name)).fetchone()
         if not row: return {"revision":0,"blob":None}
         return {"revision":row["revision"],"blob":json.loads(row["blob"])}
@@ -215,11 +223,21 @@ class TeamHub:
         with closing(self._db()) as c:
             c.execute("BEGIN IMMEDIATE")
             try:
+                current=c.execute(
+                    "SELECT role FROM members WHERE team_id=? AND user_id=?",
+                    (team_id,actor)).fetchone()
+                if current is None or ROLE_LEVEL[current["role"]] < ROLE_LEVEL["editor"]:
+                    raise HubError(403,"Team access denied")
                 row=c.execute("SELECT revision FROM documents WHERE team_id=? AND name=?",(team_id,name)).fetchone()
                 actual=row["revision"] if row else 0
                 if actual != revision: raise HubError(409,"Revision conflict; pull before overwriting")
                 # Session parts/manifests are immutable; a writer cannot
                 # rewrite an already-published encrypted backup.
+                match=_SESSION_NAME.fullmatch(name) if name.startswith("session-") else None
+                if match and c.execute(
+                    "SELECT 1 FROM revoked_sessions WHERE team_id=? AND session_id=?",
+                    (team_id,match.group(1))).fetchone():
+                    raise HubError(410,"Encrypted session handoff revoked")
                 if name.startswith("session-") and row is not None:
                     raise HubError(409,"Published session archive documents are immutable")
                 if name.startswith("session-"):
@@ -234,6 +252,39 @@ class TeamHub:
             except BaseException:
                 c.rollback();raise
         return actual+1
+
+
+    def revoke_session(self, actor:str, team_id:str, session_id:str) -> int:
+        """Owner/admin can atomically tombstone an archive and purge its ciphertext.
+
+        A tombstone prevents re-publishing an identical ID after purge.
+        The server cannot revoke copies downloaded before revocation.
+        """
+        self.require(actor,team_id,"admin")
+        try:
+            canonical=str(UUID(session_id))
+        except (TypeError,ValueError,AttributeError):
+            raise HubError(400,"Invalid session handoff ID") from None
+        if session_id != canonical:
+            raise HubError(400,"Session handoff ID must be canonical lowercase UUID")
+        with closing(self._db()) as c:
+            c.execute("BEGIN IMMEDIATE")
+            try:
+                current=c.execute(
+                    "SELECT role FROM members WHERE team_id=? AND user_id=?",
+                    (team_id,actor)).fetchone()
+                if current is None or ROLE_LEVEL[current["role"]] < ROLE_LEVEL["admin"]:
+                    raise HubError(403,"Team access denied")
+                c.execute("INSERT OR IGNORE INTO revoked_sessions VALUES(?,?,?)",
+                          (team_id,canonical,time.time()))
+                removed=c.execute(
+                    "DELETE FROM documents WHERE team_id=? AND name LIKE ?",
+                    (team_id,"session-"+canonical+"-%")).rowcount
+                c.commit()
+            except BaseException:
+                c.rollback()
+                raise
+        return removed
 
 
 class HubHTTPServer(ThreadingHTTPServer):
@@ -298,6 +349,10 @@ class HubHandler(BaseHTTPRequestHandler):
             if self.command=="GET": return 200,{"members":hub.members(actor,team_id)}
             if self.command=="POST":
                 hub.set_member(actor,team_id,body.get("username"),body.get("role"));return 200,{"status":"ok"}
+        if len(segments)==4 and segments[0]=="teams" and segments[2]=="sessions":
+            if self.command=="DELETE":
+                count=hub.revoke_session(actor,segments[1],segments[3])
+                return 200,{"status":"revoked","deleted_documents":count}
         if len(segments)==4 and segments[0]=="teams" and segments[2]=="documents":
             team_id,name=segments[1],segments[3]
             if self.command=="GET": return 200,hub.read_document(actor,team_id,name)
@@ -307,6 +362,7 @@ class HubHandler(BaseHTTPRequestHandler):
     def do_GET(self): self._serve()
     def do_POST(self): self._serve()
     def do_PUT(self): self._serve()
+    def do_DELETE(self): self._serve()
 
     def _serve(self):
         try: status,result=self._dispatch()
@@ -366,6 +422,14 @@ class CloudClient:
     def set_member(self,team_id,username,role):
         return self.request("POST",f"/teams/{team_id}/members",{"username":username,"role":role})
     def members(self,team_id):return self.request("GET",f"/teams/{team_id}/members")["members"]
+    def revoke_session(self,team_id,session_id):
+        try:
+            canonical=str(UUID(session_id))
+        except (ValueError,TypeError,AttributeError):
+            raise ValueError("Invalid session handoff ID") from None
+        if session_id != canonical:
+            raise ValueError("Session handoff ID must be canonical lowercase UUID")
+        return self.request("DELETE",f"/teams/{team_id}/sessions/{canonical}")
     def pull(self,team_id,name,passphrase):
         result=self.request("GET",f"/teams/{team_id}/documents/{name}")
         return result["revision"], (decrypt_document(result["blob"],passphrase) if result["blob"] else None)

@@ -136,3 +136,8 @@ The [official public release notes](https://genlogin.com/release-notes) currentl
 - Recorder is restricted to one selected **first tab** whose Playwright selectors are used by the replay runner. Unrelated tabs are ignored and disclosed in the review; page loads from other tabs no longer count as selected-page navigation. This prevents a single recorded draft silently mixing browser tabs, but **does not implement multi-tab recording**.
 - Capture records only the semantic Enter/Escape key events on eligible non-password text/control elements. Typed values, arbitrary keys, URL fragments and iframe actions are never accepted. Closing selected tab aborts recording; a draft cannot be imported until recording has stopped.
 - Windows/Tk UI cancellation now explicitly removes pending poll and search timer callbacks on root teardown, addressing a warning surfaced during OS-level pywinauto keyboard acceptance. No EXE is built or released.
+
+## 2026-11-22 archived cloud handoff revocation
+
+- Owner/admin can permanently revoke a published encrypted handoff by UUID; the self-hosted Hub atomically tombstones the ID and removes encrypted parts/manifest. Reads and republishing under the same ID return HTTP 410. Viewer/editor cannot revoke, and retries are idempotent.
+- Revocation of Hub storage **does not remotely erase** earlier downloads or invalidate active website sessions. This is not automatic cloud sync, not a hosted remote wipe feature and not verified full GenLogin cloud profile sharing. See `CLOUD_SESSION_HANDOFF.md`.
