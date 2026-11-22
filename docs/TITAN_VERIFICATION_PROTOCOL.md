@@ -30,3 +30,41 @@ The template has no actual Titan binary, test actions or authorized observations
 Required 12 cross-product synthetic comparison areas: profile lifecycle, session persistence, network/proxy consistency, browser locale/timezone, extension behavior, recorder, scheduler recovery, GUI accessibility, cloud-profile transfer, rendering consistency on a controlled page, long-run reliability, and license/distribution review. Every untested/failed case remains an explicit blocker. The test harness must never use personal login accounts or infer anti-fraud evasion from browser rendering.
 
 The public release notes page currently lists **GenLogin 4.5.1 (06/08/2026)** as the latest entry. This is **not** an inspected installer: no binary hash, installed edition, license, actual Titan rendering or parity report has been verified. A legally obtained reference and controlled human observations are independent prerequisites. See `TITAN_EVIDENCE_INTAKE.md` for instructions and the precise remaining release blocker.
+
+## Evidence-intake implementation, 2026-11-22 (non-invasive)
+
+The new `autumn_genlogin.titan_evidence` module **does not inspect, execute,
+download, patch, copy or reverse engineer Titan**. It accepts only a small,
+strictly validated JSON evidence index and reports the gaps remaining before
+a lawful, reproducible Windows comparison. This is an evidence-*readiness*
+check, **not a feature or parity certificate**.
+
+Start with `examples/titan/reference-evidence-template.json`. Keep
+`reference: null` and `cases: []` until independent authorized observations
+and exact, legally sourced binaries actually exist. Do not fabricate hashes,
+release editions or witness reports.
+
+```powershell
+python -m autumn_genlogin.titan_evidence examples/titan/reference-evidence-template.json
+```
+
+The command exits with status **1** while evidence remains unverified.
+Even a syntactically complete, self-reported 12/12 pass is categorized
+`needs-independent-human-review`, never `can_claim_titan_parity` or
+`can_build_exe`. The CI verifies that this guard remains enforced and that
+the reference template is honestly incomplete.
+
+A valid evidence reference requires vendor/product, exact version,
+edition, Windows version, installer SHA-256, official provenance,
+documented legal/observation authorization and an inspection date.
+Each comparison case requires separate pass/fail/not-run statuses
+and artifact digests for the reference and AutumnGenLogin. No artifact
+contents are uploaded to the repository, no credentials or session data
+belong in the JSON, and SHA-256 strings alone do **not** establish authenticity.
+
+The 12 cases are profile lifecycle, session persistence, proxy consistency,
+locale/timezone, extension behavior, recorder, scheduler recovery, GUI
+accessibility, cloud-profile transfer, rendering consistency, long-run
+reliability and distribution licensing. Any missing/failed case blocks
+further readiness; external signed witness, licensing, reproducibility,
+security, packaging and all other `RELEASE_GATES.md` checks remain mandatory.
