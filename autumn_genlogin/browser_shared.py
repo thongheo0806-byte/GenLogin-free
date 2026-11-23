@@ -328,7 +328,11 @@ class SharedBrowserManager:
             if pid in self._active: raise ValueError("Automation already running")
             self._active.add(pid)
             session.cancel.clear()
-            self._runs[pid]={"id":ident,"status":"queued","total_steps":len(payload),
+            # A graph is a three-key JSON object regardless of node count.
+            # Report configured graph nodes; runtime operations can be greater
+            # when branches/repeats execute and are not statically predictable.
+            configured_steps = len(payload) if kind == "steps" else len(payload["nodes"])
+            self._runs[pid]={"id":ident,"status":"queued","total_steps":configured_steps,
                              "extracted":[],"error":None}
             self._run_timestamps[pid]=time.monotonic()
         try:
@@ -355,7 +359,11 @@ class SharedBrowserManager:
                     if session.cancel.is_set(): break
                     await self._action(session,step,i)
             else:
-                async def step_action(step):await self._action(session,step,0)
+                executed_actions = 0
+                async def step_action(step):
+                    nonlocal executed_actions
+                    executed_actions += 1
+                    await self._action(session, step, executed_actions)
                 async def exists(selector):
                     page=await self._page(session)
                     return await page.locator(selector).first.count()>0
