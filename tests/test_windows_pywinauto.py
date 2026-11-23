@@ -134,5 +134,67 @@ class WindowsPywinautoSmokeTests(unittest.TestCase):
                     os.environ["AUTUMN_GENLOGIN_HOME"]=previous
 
 
+    def test_win32_workflow_editor_pointer_and_json_roundtrip(self):
+        """Real OS clicks, not invoke(), exercise notebook and workflow editing."""
+        import json
+        import tkinter as tk
+        from tkinter import ttk
+        from pywinauto import mouse
+        from autumn_genlogin.ui import App
+
+        def descendants(widget):
+            yield widget
+            for child in widget.winfo_children():
+                yield from descendants(child)
+
+        def click(widget, root, bbox=None):
+            root.update()
+            self.assertTrue(widget.winfo_viewable())
+            x,y,w,h=(bbox if bbox is not None
+                     else (0,0,widget.winfo_width(),widget.winfo_height()))
+            self.assertGreater(w,0)
+            self.assertGreater(h,0)
+            mouse.click(button="left",coords=(
+                widget.winfo_rootx()+x+w//2,widget.winfo_rooty()+y+h//2))
+            root.update()
+
+        with tempfile.TemporaryDirectory() as home:
+            old=os.environ.get("AUTUMN_GENLOGIN_HOME")
+            os.environ["AUTUMN_GENLOGIN_HOME"]=home
+            root=tk.Tk()
+            try:
+                app=App(root)
+                root.update()
+                main=next(n for n in descendants(root)
+                          if isinstance(n,ttk.Notebook) and len(n.tabs())==9)
+                click(main,root,main.bbox(1))
+                self.assertEqual(main.index("current"),1)
+                initial=app.builder.get_steps()
+                tree=app.builder.tree
+                tree.see("0")
+                root.update()
+                x,y,w,h=tree.bbox("0")
+                self.assertGreater(h,0)
+                mouse.click(button="left",coords=(
+                    tree.winfo_rootx()+x+min(30,w//2),
+                    tree.winfo_rooty()+y+h//2))
+                root.update()
+                self.assertEqual(tree.selection(),("0",))
+                buttons=[b for b in descendants(app.builder) if isinstance(b,ttk.Button)]
+                click(next(b for b in buttons if b.cget("text")=="Duplicate"),root)
+                self.assertEqual(len(app.builder.get_steps()),len(initial)+1)
+                click(next(b for b in buttons if b.cget("text")=="Remove"),root)
+                self.assertEqual(app.builder.get_steps(),initial)
+                click(app.flow_tabs,root,app.flow_tabs.bbox(1))
+                self.assertEqual(app.flow_tabs.index("current"),1)
+                self.assertEqual(json.loads(app.workflow.get("1.0","end")),initial)
+            finally:
+                root.destroy()
+                if old is None:
+                    os.environ.pop("AUTUMN_GENLOGIN_HOME",None)
+                else:
+                    os.environ["AUTUMN_GENLOGIN_HOME"]=old
+
+
 if __name__=="__main__":
     unittest.main()
