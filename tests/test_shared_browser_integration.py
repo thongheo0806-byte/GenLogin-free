@@ -291,10 +291,10 @@ class SharedBrowserRealTests(unittest.TestCase):
                         "Cancelling workflow must not close manually opened browser")
         self.manager.stop(profile.id)
 
-    def test_recorder_does_not_mix_tabs_and_only_records_safe_enter_key(self):
-        """Real Chromium: foreign tabs are excluded and never pollute replay."""
+    def test_recorder_captures_tabs_and_iframes_and_replays_fail_closed(self):
+        """Real Chromium: replay uses recorded tab/frame, never page zero by accident."""
         profile=self.store.save(Profile(
-            name="recorder-single-tab",browser="chromium",start_url=self.origin))
+            name="recorder-multitab-frame",browser="chromium",start_url=self.origin))
         self.manager.start(profile.id)
         self.assertTrue(eventually(lambda:(s:=self.manager._sessions.get(profile.id))
                                   is not None and s.ready.is_set(),timeout=20))
@@ -309,32 +309,56 @@ class SharedBrowserRealTests(unittest.TestCase):
             await other.locator("#secret").dispatch_event("change")
             await chosen.locator("#press").click()
             await chosen.locator("#secret").press("Enter")
-        self.manager._submit(demonstrate()).result(timeout=30)
+            await other.evaluate("""() => {
+              const frame=document.createElement('iframe');
+              frame.id='nestedQa';
+              frame.srcdoc='<button id="inside" onclick="document.body.dataset.hit=\'yes\'">QA</button>';
+              document.body.appendChild(frame);
+            }""")
+            await other.frame_locator("#nestedQa").locator("#inside").wait_for()
+            await other.frame_locator("#nestedQa").locator("#inside").click()
+        self.manager._submit(demonstrate()).result(timeout=35)
         self.assertTrue(eventually(
-            lambda:len(self.manager.recorded_steps(profile.id))>=2,timeout=15))
+            lambda:len(self.manager.recorded_steps(profile.id))>=5,timeout=15))
         self.manager.stop_recording(profile.id)
         report=self.manager.recording_review(profile.id)
         self.assertFalse(report["still_recording"])
-        self.assertGreaterEqual(report["ignored_tabs"],1)
-        self.assertEqual(report["navigation_boundaries"],0,
-                         "Opening another tab must not count as recorded-page navigation")
-        self.assertIn("other browser tab", " ".join(report["warnings"]))
+        self.assertEqual(report["ignored_tabs"],0)
+        self.assertGreaterEqual(report["navigation_boundaries"],1)
         steps=self.manager.recorded_steps(profile.id)
-        self.assertEqual(steps,[
-            {"action":"click","selector":"#press"},
-            {"action":"press","selector":"#secret","key":"Enter"}
-        ])
+        self.assertIn(("click",1,2),[
+            (s["action"],s["tab_index"],s["tab_count"]) for s in steps])
+        self.assertIn(("press",0,2),[
+            (s["action"],s["tab_index"],s["tab_count"]) for s in steps])
+        iframe_actions=[step for step in steps if step["selector"]=="#inside"]
+        self.assertEqual(len(iframe_actions),1)
+        self.assertEqual(iframe_actions[0]["frames"],["#nestedQa"])
+        self.assertEqual(iframe_actions[0]["tab_index"],1)
         self.assertNotIn("TAB_TWO_PRIVATE_SECRET",repr(report)+repr(steps))
-        # Closing the selected tab cannot silently switch the recorder target
-        # to another already-open page.
-        self.manager.start_recording(profile.id)
-        async def close_selected():
-            await self.manager._sessions[profile.id].context.pages[0].close()
-        self.manager._submit(close_selected()).result(timeout=15)
-        review=self.manager.recording_review(profile.id)
-        self.assertFalse(review["still_recording"])
-        self.assertTrue(review["selected_tab_closed"])
-        self.assertIn("selected tab closed", " ".join(review["warnings"]))
+
+        # A replay action targets the embedded frame in tab 2.
+        async def reset_fixture():
+            context=self.manager._sessions[profile.id].context
+            await context.pages[1].frame_locator("#nestedQa").locator("#inside").evaluate(
+                "(button) => { document.body.dataset.hit='no'; }")
+        self.manager._submit(reset_fixture()).result(timeout=10)
+        self.manager.run_steps(profile.id,iframe_actions)
+        self.assertTrue(eventually(
+            lambda:(self.manager.last_run(profile.id) or {}).get("status")=="succeeded"))
+        async def read_result():
+            context=self.manager._sessions[profile.id].context
+            return await context.pages[1].frame_locator("#nestedQa").locator("body").get_attribute("data-hit")
+        self.assertEqual(self.manager._submit(read_result()).result(timeout=10),"yes")
+
+        # A changed tab count must fail rather than silently redirect a click.
+        async def add_third_tab():
+            await self.manager._sessions[profile.id].context.new_page()
+        self.manager._submit(add_third_tab()).result(timeout=10)
+        self.manager.run_steps(profile.id,iframe_actions)
+        self.assertTrue(eventually(
+            lambda:(self.manager.last_run(profile.id) or {}).get("status")=="failed"),
+            "A changed tab structure must refuse replay")
+        self.assertIn("tab count",self.manager.last_run(profile.id)["error"])
         self.manager.stop(profile.id)
 
     def test_recorder_rejects_page_injection_and_reviews_navigation_safely(self):
