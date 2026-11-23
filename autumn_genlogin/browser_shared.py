@@ -410,8 +410,15 @@ class SharedBrowserManager:
                 # journal. Never persist browser page content or extracted text.
                 error = record["error"] if record else None
             if on_finish is not None:
+                def persist_outcome():
+                    try:
+                        on_finish(terminal_status,error)
+                    finally:
+                        # The scheduler journal uses thread-affine SQLite
+                        # connections. Close on the SAME worker after commit.
+                        self.store.close_thread_connection()
                 try:
-                    on_finish(terminal_status, error)
+                    await asyncio.to_thread(persist_outcome)
                 except Exception:
                     self.events.put((pid,"error","Unable to persist scheduled run outcome"))
             self.events.put((pid,"log","Workflow finished"))
@@ -430,7 +437,12 @@ class SharedBrowserManager:
         if action=="goto":await page.goto(step["url"],wait_until="domcontentloaded",timeout=30000)
         elif action=="click":await page.locator(step["selector"]).first.click(timeout=20000)
         elif action=="click_image":
-            template = self.image_templates.read(step["template_id"])
+            def read_template():
+                try:
+                    return self.image_templates.read(step["template_id"])
+                finally:
+                    self.store.close_thread_connection()
+            template = await asyncio.to_thread(read_template)
             # Keep screenshot transient. CSS scale avoids device-pixel-ratio drift.
             screen = await page.screenshot(full_page=False, scale="css")
             x, y = await asyncio.to_thread(find_image_center,screen,template,step["confidence"])
@@ -451,7 +463,8 @@ class SharedBrowserManager:
                 await asyncio.sleep(delay)
                 remaining-=delay
         elif action=="screenshot":
-            directory=self.store.shot_dir/pid;directory.mkdir(parents=True,exist_ok=True)
+            directory=self.store.shot_dir/pid
+            await asyncio.to_thread(directory.mkdir,parents=True,exist_ok=True)
             target=directory/(datetime.now().strftime("%Y%m%d_%H%M%S_%f")+".png")
             await page.screenshot(path=str(target),full_page=True)
             self.events.put((pid,"log",f"Screenshot saved: {target}"))
