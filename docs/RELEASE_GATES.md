@@ -81,3 +81,17 @@ A terminal automation outcome alone does not prove its worker resources
 have been released. Regression must pass in a new Windows PR run and on
 `main` after merge. **This remains a quality fix, not full feature parity
 or permission to create EXE artifacts.**
+
+## 2026-11-23 local QA synchronization expansion (not parity)
+
+- Test-only live synchronizer now targets specially marked buttons across
+  matching tab ordinals and same-origin synthetic iframes on literal
+  `http://127.0.0.1:port`. It refuses external iframe URLs, unmatched tab
+  counts, missing/ambiguous iframe targets and busy follower sessions.
+- Status differentiates the number of **master gestures** from individual
+  **follower deliveries** and failures. The existing 50-gesture safety cap
+  cannot be exhausted five times faster merely by having five followers.
+- Explicitly **not** implemented: arbitrary-site live synchronization, form
+  contents, credentials, navigation, scroll, keyboard, cookies, session
+  replication or a GenLogin/Titan-equivalent workflow. Those require separate
+  threat modeling, consent, requirements and runtime acceptance.
