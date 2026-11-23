@@ -99,26 +99,6 @@ FRAME_ELEMENT_SELECTOR = r"""el => {
 
 
 @dataclass
-class Session:');
-  if (el.id) return '#' + esc(el.id);
-  const test=el.getAttribute('data-testid');
-  if (test && /^[\\w-]{1,100}$/.test(test)) return '[data-testid="' + test + '"]';
-  let path=[];
-  while (el && el.tagName && path.length<6) {
-    let part=el.tagName.toLowerCase();
-    const parent=el.parentElement;
-    if (parent) {
-      const peers=Array.from(parent.children).filter(x=>x.tagName===el.tagName);
-      if (peers.length>1) part+=':nth-of-type('+(peers.indexOf(el)+1)+')';
-    }
-    path.unshift(part);
-    el=parent;
-  }
-  return path.join(' > ');
-}"""
-
-
-@dataclass
 class Session:
     profile: object
     cancel: threading.Event = field(default_factory=threading.Event)
