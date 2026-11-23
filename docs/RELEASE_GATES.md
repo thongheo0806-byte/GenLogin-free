@@ -129,3 +129,17 @@ or permission to create EXE artifacts.**
   lock. A GUI smoke regression deliberately stalls the schedule reader and
   verifies a Tk heartbeat. These tests **do not** replace long-running
   SQLite contention, disk-full or crash-recovery acceptance.
+
+## 2026-11-23 batch journal listing cost bound (development)
+
+- `BatchJournal.list(limit)` reads up to 100 serialized snapshots through
+  one SQLite read-only SELECT. It no longer opens a new connection and
+  re-enters `get()` for every terminal batch.
+- Completed batches are immutable detached results, requiring **no**
+  `ProfileLease` acquisition. Only snapshots still marked `running` pass
+  through the existing crash-recovery lease guard: a still-owned batch is
+  preserved as running, and an orphaned batch becomes uncertain/partial
+  without replaying website actions.
+- This improves GUI/API history latency but does not eliminate lease checks
+  for genuinely running batches or replace storage corruption/disaster
+  recovery acceptance.

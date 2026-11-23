@@ -137,6 +137,58 @@ class BatchHistoryTests(unittest.TestCase):
             runner._journal.get(ident)
         self.assertEqual(self.store.all().__len__(),2)
 
+    def test_history_list_uses_one_read_and_no_terminal_os_lease(self):
+        journal=BatchJournal(self.store)
+        created=[]
+        for i in range(32):
+            ident=str(uuid4())
+            created.append(ident)
+            journal.save({
+                "id":ident,"created_utc":"2026-11-20T00:00:00+00:00",
+                "finished_utc":"2026-11-20T00:00:01+00:00",
+                "status":"succeeded","max_parallel":1,"cancel_requested":False,
+                "items":[{"profile_id":self.ids[0],"status":"succeeded",
+                          "run_id":str(uuid4()),"error_type":""}],
+            })
+        # A full terminal-history list must not call get 32 times or acquire
+        # any ProfileLease merely because the GUI lists completed work.
+        with (patch.object(journal,"get",side_effect=AssertionError("N+1 get")),
+              patch("autumn_genlogin.batch_history.ProfileLease",
+                    side_effect=AssertionError("Terminal history must not lock"))):
+            recent=journal.list(limit=32)
+        self.assertEqual([x["id"] for x in recent],list(reversed(created)))
+        self.assertTrue(all(x["status"]=="succeeded" for x in recent))
+        recent[0]["items"][0]["status"]="failed"
+        self.assertEqual(journal.get(created[-1])["items"][0]["status"],
+                         "succeeded","List results must be detached snapshots")
+
+    def test_history_list_recovers_only_running_entry(self):
+        journal=BatchJournal(self.store)
+        ended=str(uuid4())
+        active=str(uuid4())
+        item={"profile_id":self.ids[0],"status":"succeeded",
+              "run_id":str(uuid4()),"error_type":""}
+        journal.save({
+            "id":ended,"created_utc":"2026-11-20T00:00:00+00:00",
+            "finished_utc":"2026-11-20T00:00:01+00:00",
+            "status":"succeeded","max_parallel":1,"cancel_requested":False,
+            "items":[item],
+        })
+        journal.save({
+            "id":active,"created_utc":"2026-11-20T00:00:00+00:00",
+            "finished_utc":None,"status":"running","max_parallel":1,
+            "cancel_requested":False,
+            "items":[{**item,"status":"running"}],
+        })
+        with patch.object(journal,"_recover",wraps=journal._recover) as recover:
+            snapshot=journal.list(limit=2)
+        self.assertEqual(recover.call_count,1)
+        self.assertEqual(recover.call_args.args[0]["id"],active)
+        self.assertEqual([x["status"] for x in snapshot],["partial","succeeded"])
+        self.assertEqual(snapshot[0]["items"][0]["status"],"uncertain")
+        # No browser manager was invoked, and uncertain work was not replayed.
+        self.assertEqual(journal.get(active)["status"],"partial")
+
     def test_bad_initial_disk_write_stops_all_browser_launches(self):
         manager=FakeManager()
         runner=BatchRunner(self.store,manager)
