@@ -193,13 +193,14 @@ class TeamHubHardeningTests(unittest.TestCase):
 
     def test_migrates_old_document_table_without_losing_rows(self):
         legacy_path = self.root / "old.sqlite3"
-        with sqlite3.connect(legacy_path) as conn:
-            conn.execute(
-                "CREATE TABLE documents(team_id TEXT NOT NULL,name TEXT NOT NULL,"
-                "revision INTEGER NOT NULL,blob TEXT NOT NULL,PRIMARY KEY(team_id,name))"
-            )
-            conn.execute("INSERT INTO documents VALUES(?,?,?,?)",
-                         ("old-team", "profiles", 1, '{"format":"legacy"}'))
+        with closing(sqlite3.connect(legacy_path)) as conn:
+            with conn:
+                conn.execute(
+                    "CREATE TABLE documents(team_id TEXT NOT NULL,name TEXT NOT NULL,"
+                    "revision INTEGER NOT NULL,blob TEXT NOT NULL,PRIMARY KEY(team_id,name))"
+                )
+                conn.execute("INSERT INTO documents VALUES(?,?,?,?)",
+                             ("old-team", "profiles", 1, '{"format":"legacy"}'))
         upgraded = TeamHub(legacy_path)
         with closing(upgraded._db()) as conn:
             columns = [row["name"] for row in conn.execute("PRAGMA table_info(documents)")]
