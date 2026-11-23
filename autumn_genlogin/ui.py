@@ -135,6 +135,13 @@ class App:
         self.scheduler.start()
         self.batches = BatchRunner(self.store, self.manager)
         self.qa_sync = LocalQASynchronizer(self.manager)
+        # Background tasks send only completed results to this queue.
+        # No Tk widget or StringVar is touched outside the main UI thread.
+        self._ui_task_results = queue.Queue()
+        self._recorder_starting = set()
+        self._recorder_stop_requested = set()
+        self._qa_starting = False
+        self._qa_stop_requested = False
         self.miniapps = MiniAppLibrary(self.store)
         self.cloud = None
         self.cloud_revision = {"profiles": 0, "workflows": 0}
@@ -360,30 +367,35 @@ class App:
     def open_profile(self):
         pid = self.selected_id()
         if pid:
-            try:
-                self.manager.start(pid)
-                self.refresh()
-            except Exception as exc:
-                messagebox.showerror("Browser error", str(exc))
+            self.notice("Opening selected profile...")
+            self._run_ui_task(lambda: self.manager.start(pid),
+                              lambda _result: self.refresh(), title="Browser error")
 
     def open_group(self):
         group = self.group.get()
         if group == "All groups":
             messagebox.showinfo("Choose a group", "Select one group from the Group menu first.")
             return
-        started, failed = 0, []
-        for p in self.store.all():
-            if p.group_name != group or self.manager.active(p.id):
-                continue
-            try:
-                self.manager.start(p.id)
-                started += 1
-            except Exception as exc:
-                failed.append(f"{p.name}: {exc}")
-        self.refresh()
-        self.notice(f"Opened {started} profiles from {group}")
-        if failed:
-            messagebox.showwarning("Some profiles did not open", "\n".join(failed[:8]))
+        def task():
+            started, failed = 0, []
+            for p in self.store.all():
+                if p.group_name != group or self.manager.active(p.id):
+                    continue
+                try:
+                    self.manager.start(p.id)
+                    started += 1
+                except Exception as exc:
+                    failed.append(f"{p.name}: {type(exc).__name__}")
+            return started, failed
+        def finished(result):
+            started, failed = result
+            self.refresh()
+            self.notice(f"Opened {started} profiles from {group}")
+            if failed:
+                messagebox.showwarning("Some profiles did not open", "\n".join(failed[:8]),
+                                       parent=self.root)
+        self.notice("Opening selected profile group...")
+        self._run_ui_task(task, finished, title="Browser group")
 
     def stop_profile(self):
         pid = self.selected_id()
@@ -618,16 +630,34 @@ class App:
 
     def start_recorder(self):
         pid = self.selected_id()
-        if pid:
-            try:
-                self.manager.start_recording(pid)
+        if not pid or pid in self._recorder_starting:
+            return
+        self._recorder_starting.add(pid)
+        self.notice("Installing recorder for selected profile...")
+
+        def done(_result):
+            self._recorder_starting.discard(pid)
+            if pid in self._recorder_stop_requested:
+                self._recorder_stop_requested.discard(pid)
+                self.manager.stop_recording(pid)
+                self.notice("Recorder stopped (stop requested during startup)")
+            else:
                 self.notice("Recorder active for selected browser only; input values and page URLs are never captured.")
-            except Exception as exc:
-                messagebox.showerror("Recorder", str(exc), parent=self.root)
+
+        def failed(message):
+            self._recorder_starting.discard(pid)
+            self._recorder_stop_requested.discard(pid)
+            messagebox.showerror("Recorder", message, parent=self.root)
+        self._run_ui_task(lambda: self.manager.start_recording(pid), done,
+                          title="Recorder", failed=failed)
 
     def stop_recorder(self):
         pid = self.selected_id()
         if pid:
+            if pid in self._recorder_starting:
+                self._recorder_stop_requested.add(pid)
+                self.notice("Recorder stop queued until startup completes")
+                return
             self.manager.stop_recording(pid)
             self.notice("Recorder stopped; import the captured actions before closing the profile")
 
@@ -869,7 +899,7 @@ class App:
 
     def start_qa_sync(self):
         pid=self.selected_id()
-        if not pid:
+        if not pid or self._qa_starting:
             return
         try:
             if not self.manager.active(pid):
@@ -888,31 +918,48 @@ class App:
                     "No website logins, personal accounts or passwords. Continue?",
                     parent=self.root):
                 return
-            state=self.qa_sync.start(pid,followers)
-            self.qa_sync_label.set(f"QA sync on: {len(followers)} followers at {state['origin']}")
-            self.notice("Experimental local QA click sync started")
+            self._qa_starting=True
+            self.qa_sync_label.set("Starting QA sync (checking profile readiness)...")
+            def done(state):
+                self._qa_starting=False
+                if self._qa_stop_requested:
+                    self._qa_stop_requested=False
+                    self.stop_qa_sync()
+                    return
+                self.qa_sync_label.set(f"QA sync on: {len(followers)} followers at {state['origin']}")
+                self.notice("Experimental local QA click sync started")
+            def failed(message):
+                self._qa_starting=False
+                self._qa_stop_requested=False
+                self.qa_sync_label.set("QA sync is OFF")
+                messagebox.showerror("QA synchronizer",message,parent=self.root)
+            self._run_ui_task(lambda:self.qa_sync.start(pid,followers),
+                              done,title="QA synchronizer",failed=failed)
         except Exception as exc:
             messagebox.showerror("QA synchronizer",str(exc),parent=self.root)
 
     def stop_qa_sync(self):
-        try:
-            result=self.qa_sync.stop()
-            self.qa_sync_label.set("QA sync is OFF")
-            self.notice("QA click sync stopped")
-        except Exception as exc:
-            messagebox.showerror("QA synchronizer",str(exc),parent=self.root)
+        if self._qa_starting:
+            self._qa_stop_requested=True
+            self.qa_sync_label.set("QA sync stop queued until startup completes")
+            return
+        self.qa_sync_label.set("Stopping QA sync...")
+        self._run_ui_task(
+            self.qa_sync.stop,
+            lambda _state:(self.qa_sync_label.set("QA sync is OFF"),
+                           self.notice("QA click sync stopped")),
+            title="QA synchronizer",
+        )
 
     def refresh_qa_sync(self):
-        try:
-            state=self.qa_sync.status()
+        def done(state):
             if not state["active"]:
                 self.qa_sync_label.set("QA sync is OFF")
             else:
                 self.qa_sync_label.set(
                     f"QA sync: {state['mirrored_clicks']} clicks mirrored, "
                     f"{state['failed_clicks']} failed; local origin {state['origin']}")
-        except Exception as exc:
-            messagebox.showerror("QA synchronizer",str(exc),parent=self.root)
+        self._run_ui_task(self.qa_sync.status,done,title="QA synchronizer")
 
     def _build_batch_tab(self, frame):
         ttk.Label(frame, text="Run the current workflow across a selected profile group",
@@ -1578,6 +1625,32 @@ class App:
         except Exception as exc:
             messagebox.showerror("Local API error", str(exc))
 
+    def _run_ui_task(self, task, finished=None, *, title="Background operation",
+                     failed=None):
+        """Run potentially slow Playwright/SQLite work without blocking Tk."""
+        if failed is None:
+            failed=lambda message: messagebox.showerror(title,message,parent=self.root)
+        def worker():
+            completion=None
+            try:
+                result=task()
+            except Exception as exc:
+                # Display readable validation errors, never a raw browser trace
+                # that could include page content or credentials.
+                message=(str(exc) if isinstance(exc,(ValueError,RuntimeError))
+                         else type(exc).__name__)
+                completion=(failed,message)
+            else:
+                if finished is not None:
+                    completion=(finished,result)
+            finally:
+                # Close thread-owned SQLite connections before reporting success
+                # so the GUI can safely clean up temporary Windows data dirs.
+                self.store.close_thread_connection()
+            if completion is not None:
+                self._ui_task_results.put(completion)
+        threading.Thread(target=worker,daemon=True,name="autumn-ui-worker").start()
+
     def _copy(self, content):
         self.root.clipboard_clear()
         self.root.clipboard_append(content)
@@ -1594,6 +1667,14 @@ class App:
 
     def poll_events(self):
         try:
+            for _ in range(100):
+                try:
+                    callback, value = self._ui_task_results.get_nowait()
+                except queue.Empty:
+                    break
+                if self._ui_destroyed:
+                    break
+                callback(value)
             for _ in range(100):
                 try:
                     pid, kind, message = self.manager.events.get_nowait()
