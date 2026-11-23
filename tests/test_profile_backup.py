@@ -112,6 +112,47 @@ class EncryptedProfileBackupTests(unittest.TestCase):
                     restore_encrypted_profile(self.store,self.destination,self.passphrase)
                 self.assertEqual(len(self.store.all()),1)
 
+    def test_rebuildable_caches_not_backed_up_but_browser_state_remains(self):
+        for folder in ("Cache", "Code Cache", "GPUCache", "GrShaderCache"):
+            directory=self.folder/"Default"/folder
+            directory.mkdir(parents=True)
+            for index in range(15):
+                (directory/f"disposable-{index}.bin").write_bytes(b"cache")
+        worker=self.folder/"Default"/"Service Worker"/"CacheStorage"
+        worker.mkdir(parents=True)
+        (worker/"offline-state").write_bytes(b"preserve-offline")
+        indexed=self.folder/"Default"/"IndexedDB"
+        indexed.mkdir(parents=True)
+        (indexed/"persisted").write_bytes(b"preserve-indexed")
+        # Only the 2 baseline files and 2 important state files survive.
+        with patch("autumn_genlogin.profile_backup.MAX_FILES", 5):
+            self.assertEqual(self._export(),4)
+        restored=restore_encrypted_profile(self.store,self.destination,self.passphrase)
+        folder=self.store.profile_path(restored.id)/"Default"
+        self.assertEqual((folder/"Local Storage"/"db.txt").read_text(),
+                         "fake-cookie-session-secret-value")
+        self.assertEqual((folder/"Service Worker"/"CacheStorage"/"offline-state").read_bytes(),
+                         b"preserve-offline")
+        self.assertEqual((folder/"IndexedDB"/"persisted").read_bytes(),
+                         b"preserve-indexed")
+        for cache in ("Cache", "Code Cache", "GPUCache", "GrShaderCache"):
+            self.assertFalse((folder/cache).exists())
+
+    def test_link_in_skipped_cache_is_rejected_before_pruning(self):
+        cached=self.folder/"Default"/"Cache"
+        cached.mkdir(parents=True)
+        outside=self.root/"external-private"
+        outside.write_bytes(b"never include")
+        alias=cached/"suspicious"
+        try:
+            alias.symlink_to(outside)
+        except (OSError,NotImplementedError):
+            self.skipTest("Symlinks unavailable")
+        # Rebuildable cache directories are pruned; a symlink contained inside
+        # such a pruned tree is not traversed and cannot be archived.
+        self.assertEqual(self._export(),2)
+        self.assertNotIn(b"never include",self.destination.read_bytes())
+
     def test_wrong_passphrase_and_tamper_do_not_install_any_profile(self):
         self._export()
         with self.assertRaises(ValueError):
