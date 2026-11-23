@@ -89,3 +89,17 @@
   filesystem traversal permission.
 - A successful archive restore confirms the covered files were preserved,
   not that every web app session works identically on another OS/browser.
+
+
+## 2026-11-23 public Store SQLite transaction boundaries
+
+- Trusted in-process modules now use `Store.transaction()` for durable
+  SQLite mutations and `Store.read()` for truly read-only snapshots instead
+  of reaching into `Store._connect()`. Initial migrations cover scheduler,
+  batch journal, Miniapps, extension catalog and safe cloud profile merge.
+- The public contexts preserve `_connect`'s thread-affine connection
+  ownership, commits on success, rollbacks on failure and Windows worker
+  cleanup semantics; this is **not** a new network-accessible SQL API.
+- Regression tests confirm reads refuse writes, a successful transaction
+  commits, and an exceptional transaction rolls back. Public access does not
+  imply arbitrary plugins are authorized to mutate the database.

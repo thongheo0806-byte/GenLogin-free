@@ -55,7 +55,7 @@ class RunRecord:
 class ScheduleStore:
     def __init__(self, store: Store):
         self.store = store
-        with store._connect() as c:
+        with store.transaction() as c:
             c.execute("""CREATE TABLE IF NOT EXISTS schedules (
                 id TEXT PRIMARY KEY, profile_id TEXT NOT NULL,
                 workflow_json TEXT NOT NULL, next_run_utc TEXT NOT NULL,
@@ -100,7 +100,7 @@ class ScheduleStore:
         if interval_seconds is not None and (type(interval_seconds) is not int or not 60 <= interval_seconds <= 31_536_000):
             raise ValueError("Repeat interval must be 60 seconds to 1 year")
         job_id = str(uuid4())
-        with self.store._connect() as c:
+        with self.store.transaction() as c:
             c.execute("INSERT INTO schedules (id,profile_id,workflow_json,next_run_utc,interval_seconds) VALUES(?,?,?,?,?)",
                       (job_id, pid, json.dumps(flow), iso(next_run), interval_seconds))
         return job_id
@@ -114,7 +114,7 @@ class ScheduleStore:
         lock merely because someone persisted malformed workflow JSON.
         """
         jobs = []
-        with self.store._connect(readonly=True) as c:
+        with self.store.read() as c:
             rows = c.execute("SELECT * FROM schedules ORDER BY next_run_utc").fetchall()
         for r in rows:
             try:
@@ -129,14 +129,14 @@ class ScheduleStore:
 
     def remove(self, job_id: str) -> None:
         jid = str(UUID(job_id))
-        with self.store._connect() as c:
+        with self.store.transaction() as c:
             c.execute("DELETE FROM schedule_runs WHERE job_id=?", (jid,))
             c.execute("DELETE FROM schedules WHERE id=?", (jid,))
 
     def history(self, job_id: str | None = None, limit: int = 50) -> list[RunRecord]:
         if type(limit) is not int or not 1 <= limit <= 200:
             raise ValueError("History limit must be 1-200")
-        with self.store._connect() as c:
+        with self.store.transaction() as c:
             if job_id is not None:
                 rows = c.execute("SELECT * FROM schedule_runs WHERE job_id=? ORDER BY rowid DESC LIMIT ?",
                                  (str(UUID(job_id)), limit)).fetchall()
@@ -150,7 +150,7 @@ class ScheduleStore:
         now_s = iso(now)
         limit = max(1, min(20, limit))
         claimed=[]
-        with self.store._connect() as c:
+        with self.store.transaction() as c:
             # The scheduler polls once per second. Avoid an EXCLUSIVE writer
             # reservation during idle periods so GUI/API writes are not
             # needlessly queued behind a job-free polling transaction.
@@ -216,7 +216,7 @@ class ScheduleStore:
         Completion may race with this acknowledgement. Never overwrite a
         terminal run result with 'submitted'.
         """
-        with self.store._connect() as c:
+        with self.store.transaction() as c:
             if dispatch_id is not None:
                 c.execute("UPDATE schedule_runs SET status='submitted' "
                           "WHERE id=? AND job_id=? AND status='dispatch_pending'",(dispatch_id,job_id))
@@ -231,7 +231,7 @@ class ScheduleStore:
     def record_error(self, job_id: str, error: str, dispatch_id: str | None = None) -> None:
         """Failed browser submission; do not automatically replay side effects."""
         kind = self._safe_error(error)
-        with self.store._connect() as c:
+        with self.store.transaction() as c:
             if dispatch_id is None:
                 latest = c.execute("SELECT id FROM schedule_runs WHERE job_id=? ORDER BY rowid DESC LIMIT 1",
                                    (job_id,)).fetchone()
@@ -250,7 +250,7 @@ class ScheduleStore:
         if status not in {"succeeded","failed","cancelled"}:
             raise ValueError("Nonterminal browser run status")
         kind = self._safe_error(error) if error else ""
-        with self.store._connect() as c:
+        with self.store.transaction() as c:
             c.execute("BEGIN IMMEDIATE")
             row = c.execute("SELECT job_id,status FROM schedule_runs WHERE id=?", (str(UUID(dispatch_id)),)).fetchone()
             if not row or row["status"] not in {"submitted","dispatch_pending"}:
@@ -270,7 +270,7 @@ class ScheduleStore:
         """
         job_id = str(UUID(job_id))
         next_run = iso(now or utcnow())
-        with self.store._connect() as c:
+        with self.store.transaction() as c:
             c.execute("BEGIN IMMEDIATE")
             row = c.execute("SELECT enabled,interval_seconds,last_status FROM schedules WHERE id=?",
                             (job_id,)).fetchone()

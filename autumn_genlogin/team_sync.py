@@ -631,7 +631,7 @@ def merge_safe_profiles(store,document:dict,*,active=lambda _:False,
         normalized.append(record)
     if expected_local is not None:
         _profiles(expected_local)
-    with store._connect() as conn:
+    with store.transaction() as conn:
         conn.execute("BEGIN IMMEDIATE")
         if expected_local is not None:
             # Do not query Store.all() from a second connection. Comparing in

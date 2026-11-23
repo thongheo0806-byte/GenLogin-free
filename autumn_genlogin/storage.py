@@ -92,6 +92,23 @@ class Store:
             if not self._reuse_connections:
                 conn.close()
 
+    def transaction(self):
+        """Public SQLite transactional context for trusted in-process modules.
+
+        The connection remains thread-affine. On exit the existing Store
+        context manager commits or rolls back and closes non-reused handles.
+        Callers must not retain the connection after the context ends.
+        """
+        return self._connect()
+
+    def read(self):
+        """Public, truly read-only SQLite snapshot context.
+
+        This opens mode=ro and must never silently escalate into a write
+        connection; use transaction() for explicit durable mutations.
+        """
+        return self._connect(readonly=True)
+
     def close_thread_connection(self) -> None:
         """Close connections owned by the calling thread, never another one."""
         for attr in ("readonly", "writable"):
