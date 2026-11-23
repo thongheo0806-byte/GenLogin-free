@@ -96,6 +96,11 @@ def merge_cloud_documents(name: str, base: dict | None, local: dict,
         b, l, r = baseline.get(ident), ours.get(ident), theirs.get(ident)
         # Metadata sync does not delete profiles on a missing record.
         if l is None and r is None:
+            # Never infer destructive deletion from two missing snapshots.
+            # Preserve the previously known profile until an explicit
+            # local delete/remote revoke workflow is implemented.
+            if b is not None:
+                merged[ident]=b
             continue
         if l is None:
             merged[ident]=r
