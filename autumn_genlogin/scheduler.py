@@ -151,6 +151,17 @@ class ScheduleStore:
         limit = max(1, min(20, limit))
         claimed=[]
         with self.store._connect() as c:
+            # The scheduler polls once per second. Avoid an EXCLUSIVE writer
+            # reservation during idle periods so GUI/API writes are not
+            # needlessly queued behind a job-free polling transaction.
+            if c.execute(
+                "SELECT 1 FROM schedules WHERE enabled=1 AND next_run_utc<=? LIMIT 1",
+                (now_s,),
+            ).fetchone() is None:
+                return claimed
+            # A concurrent scheduler may have claimed the row since the
+            # optimistic read. Recheck inside the write transaction to
+            # preserve exactly-once claims across processes and threads.
             c.execute("BEGIN IMMEDIATE")
             rows = c.execute("SELECT * FROM schedules WHERE enabled=1 AND next_run_utc<=? ORDER BY next_run_utc LIMIT ?",
                              (now_s, limit)).fetchall()
