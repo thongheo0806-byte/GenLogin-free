@@ -329,5 +329,56 @@ class TkinterSmokeTests(unittest.TestCase):
                     os.environ["AUTUMN_GENLOGIN_HOME"]=previous
 
 
+    def test_slow_schedule_list_and_history_keep_tk_heartbeat_alive(self):
+        import tkinter as tk
+        from autumn_genlogin.ui import App
+
+        with tempfile.TemporaryDirectory() as home:
+            previous=os.environ.get("AUTUMN_GENLOGIN_HOME")
+            os.environ["AUTUMN_GENLOGIN_HOME"]=home
+            root=tk.Tk()
+            root.withdraw()
+            entered=threading.Event()
+            release=threading.Event()
+            done=threading.Event()
+            def pump(predicate,seconds=6):
+                deadline=time.monotonic()+seconds
+                while time.monotonic()<deadline:
+                    root.update()
+                    if predicate():return True
+                    time.sleep(0.01)
+                return False
+            try:
+                app=App(root)
+                original=app.schedule_store.list
+                # Initial async refresh from app construction can be pending.
+                self.assertTrue(pump(lambda:app._ui_task_results.empty(),seconds=3))
+                def stalled_list():
+                    entered.set()
+                    if not release.wait(timeout=5):
+                        raise RuntimeError("Scheduler test worker not released")
+                    return original()
+                with patch.object(app.schedule_store,"list",side_effect=stalled_list):
+                    app.refresh_schedules()
+                    self.assertTrue(pump(entered.is_set))
+                    heartbeat=threading.Event()
+                    root.after(25,heartbeat.set)
+                    self.assertTrue(pump(heartbeat.is_set,seconds=1),
+                                    "Schedule SQL blocked Tk event loop")
+                    release.set()
+                    self.assertTrue(pump(
+                        lambda:not app._ui_task_results.qsize() and
+                        not any(t.name=="autumn-ui-worker" for t in
+                                threading.enumerate()),
+                        seconds=5))
+            finally:
+                release.set()
+                root.destroy()
+                if previous is None:
+                    os.environ.pop("AUTUMN_GENLOGIN_HOME",None)
+                else:
+                    os.environ["AUTUMN_GENLOGIN_HOME"]=previous
+
+
 if __name__ == "__main__":
     unittest.main()

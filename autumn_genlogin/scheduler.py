@@ -106,25 +106,25 @@ class ScheduleStore:
         return job_id
 
     def list(self) -> list[Job]:
-        """A damaged persisted workflow must not take down GUI or the API."""
+        """Read-only snapshot: corrupt rows are shown disabled, never dispatched.
+
+        Quarantine writes happen in claim_due() when a damaged row becomes
+        due, inside its existing atomic claim transaction. Viewing schedules
+        through Tk or GET /v1/schedules must never acquire a SQLite writer
+        lock merely because someone persisted malformed workflow JSON.
+        """
         jobs = []
-        with self.store._connect() as c:
+        with self.store._connect(readonly=True) as c:
             rows = c.execute("SELECT * FROM schedules ORDER BY next_run_utc").fetchall()
-            for r in rows:
-                try:
-                    workflow = self._stored_workflow(r["workflow_json"])
-                    enabled, status, error = bool(r["enabled"]), r["last_status"], r["last_error"]
-                except ValueError:
-                    workflow, enabled, status, error = [], False, "error", "InvalidStoredWorkflow"
-                    # Compare raw data to avoid quarantining a concurrently edited job.
-                    c.execute(
-                        "UPDATE schedules SET enabled=0,last_status='error',last_error=? "
-                        "WHERE id=? AND workflow_json=?",
-                        (error, r["id"], r["workflow_json"]),
-                    )
-                jobs.append(Job(id=r["id"], profile_id=r["profile_id"], workflow=workflow,
-                                next_run_utc=r["next_run_utc"], interval_seconds=r["interval_seconds"],
-                                enabled=enabled, last_status=status, last_error=error))
+        for r in rows:
+            try:
+                workflow = self._stored_workflow(r["workflow_json"])
+                enabled, status, error = bool(r["enabled"]), r["last_status"], r["last_error"]
+            except ValueError:
+                workflow, enabled, status, error = [], False, "error", "InvalidStoredWorkflow"
+            jobs.append(Job(id=r["id"], profile_id=r["profile_id"], workflow=workflow,
+                            next_run_utc=r["next_run_utc"], interval_seconds=r["interval_seconds"],
+                            enabled=enabled, last_status=status, last_error=error))
         return jobs
 
     def remove(self, job_id: str) -> None:
