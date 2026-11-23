@@ -73,8 +73,8 @@ class RecordingReviewTests(unittest.TestCase):
             [{"action":"press","selector":"#search","key":"Enter"}],
             ignored_tabs=2)
         self.assertEqual(result.public_summary()["ignored_tabs"],2)
-        self.assertIn("2 other browser tab", " ".join(result.warnings))
-        self.assertNotIn("other browser tab", " ".join(review_recording([]).warnings))
+        self.assertIn("2 browser tab(s)", " ".join(result.warnings))
+        self.assertNotIn("browser tab(s)", " ".join(review_recording([]).warnings))
         for bad in (-1,True,1001,"2"):
             with self.subTest(value=bad),self.assertRaises(ValueError):
                 review_recording([],ignored_tabs=bad)
