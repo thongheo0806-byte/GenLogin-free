@@ -239,8 +239,13 @@ class SharedBrowserRealTests(unittest.TestCase):
             await second.evaluate("delete document.body.dataset.clicked")
         self.manager._submit(move_one_follower_to_wrong_route()).result(timeout=15)
         self.manager._submit(master_click()).result(timeout=15)
+        # The master gesture counter increments BEFORE follower deliveries;
+        # await the terminal accounting of every attempted follower, not the
+        # gesture count alone (otherwise this assertion races the asyncio loop).
         self.assertTrue(eventually(
-            lambda:mirror.status().get("mirrored_clicks")==2,timeout=15))
+            lambda:(state:=mirror.status()).get("mirrored_clicks")==2 and
+                    state.get("delivered_clicks",0)+state.get("failed_clicks",0)==4,
+            timeout=15))
         self.assertEqual(mirror.status()["delivered_clicks"],3)
         self.assertEqual(mirror.status()["failed_clicks"],1)
         async def follower_route_results():
