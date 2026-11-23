@@ -3,7 +3,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 
 from experiments.browser_use_lab.policy import (
     BROWSER_USE_VERSION, MODEL_BASE_URL, SENSITIVE_NAMES, validate_environment
@@ -71,6 +71,13 @@ class BrowserUseLabPolicyTests(unittest.TestCase):
                     html=resp.read().decode()
                 assert "Verify local fixture" in html
                 assert "TEST-OK" in html
+                # Fake agent explicitly simulates the verification event.
+                # A text-only reported success must no longer be sufficient.
+                with urlopen(Request(address.rstrip("/") + "/verified",
+                                     data=b"TEST-OK",method="POST",
+                                     headers={"Content-Type":"text/plain"}),
+                             timeout=2) as response:
+                    assert response.status == 204
                 class Result:
                     def final_result(self):
                         return "TEST-OK"
