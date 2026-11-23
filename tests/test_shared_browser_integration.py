@@ -312,7 +312,7 @@ class SharedBrowserRealTests(unittest.TestCase):
             await other.evaluate("""() => {
               const frame=document.createElement('iframe');
               frame.id='nestedQa';
-              frame.srcdoc='<button id="inside" onclick="document.body.dataset.hit=\'yes\'">QA</button>';
+              frame.srcdoc='<button id="inside">QA</button><script>document.querySelector("button").onclick=()=>{document.body.dataset.hit="yes"}</script>';
               document.body.appendChild(frame);
             }""")
             await other.frame_locator("#nestedQa").locator("#inside").wait_for()
