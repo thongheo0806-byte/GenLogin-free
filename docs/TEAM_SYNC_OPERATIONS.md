@@ -126,3 +126,32 @@ Only services that issued those sessions can revoke them. See
 - A Windows Tk heartbeat regression deliberately stalls cloud SQLite
   work and verifies the UI keeps dispatching callbacks. This does **not**
   establish complete DB/GUI load testing for very large profile catalogs.
+
+
+## 2026-11-23 versioned Team Hub scrypt migration (development)
+
+- All **new** encrypted team documents now carry a strictly validated
+  `kdf: {name: "scrypt", log_n: 15, r: 8, p: 1}` header. The client
+  derives the AES-256-GCM key with `N=32768` and **authenticates the
+  canonical KDF header** as associated data. Changing the claimed work
+  factor or algorithm makes decryption fail. The hub validates envelope
+  shape and bounds but **cannot** authenticate its ciphertext without
+  the user's passphrase.
+- Historic `AutumnGenLogin/encrypted-1` blobs without a `kdf` field
+  remain decryptable using their original `N=16384` and historic AAD.
+  An operator need not lose access to old encrypted revisions. An older
+  un-upgraded client may, however, reject newly generated versioned
+  envelopes; coordinate client upgrades with team members **before**
+  publishing a new revision. No on-server mass re-encryption is performed.
+- New Hub account registrations use `N=32768`. Existing user rows
+  gain an additive `password_kdf_log_n` column defaulting to 14; only
+  a successful login transparently upgrades that individual password
+  hash to 15 using a fresh random salt. Username, user ID, team
+  membership and other team data remain unchanged. A failed login does
+  not trigger a hash change.
+- Derivation work factors are bounded to `14..17` and `r=8,p=1`,
+  with an explicit 256 MiB scrypt memory ceiling to reject malicious
+  requests for huge resources. New registration uses 15; acceptance for
+  larger values, full host load tests and independent security audit
+  remain outstanding. The separate local `.aglb` profile backup has
+  its **own** versioned KDF policy; this change does not rewrite it.
