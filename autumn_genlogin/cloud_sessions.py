@@ -15,7 +15,7 @@ from pathlib import Path
 import re
 from uuid import UUID, uuid4
 
-from .profile_backup import MAGIC, HEADER_SIZE, TAG_SIZE
+from .profile_backup import MAGIC, MAGIC_V2, HEADER_SIZE, TAG_SIZE
 
 PART_SIZE = 256 * 1024
 MAX_ARCHIVE = 16 * 1024 * 1024
@@ -32,7 +32,7 @@ def _file_size(source: Path) -> int:
     if size < HEADER_SIZE + TAG_SIZE or size > MAX_ARCHIVE:
         raise ValueError("Session handoff supports encrypted backups up to 16 MiB")
     with source.open("rb") as fd:
-        if fd.read(len(MAGIC)) != MAGIC:
+        if fd.read(len(MAGIC)) not in {MAGIC, MAGIC_V2}:
             raise ValueError("Input must be an AutumnGenLogin encrypted .aglb backup")
     return size
 
@@ -177,7 +177,7 @@ class CloudSessionHandoff:
         result=b"".join(chunks)
         if len(result)!=size or hashlib.sha256(result).hexdigest()!=digest:
             raise ValueError("Remote encrypted archive integrity verification failed")
-        if not result.startswith(MAGIC):
+        if not result.startswith((MAGIC, MAGIC_V2)):
             raise ValueError("Remote object is not a valid encrypted backup container")
         # Store only still-encrypted .aglb bytes; never decrypt or auto-import.
         # 'xb' reserves a brand-new path, preventing accidental overwrite.

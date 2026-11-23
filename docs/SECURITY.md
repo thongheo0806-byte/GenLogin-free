@@ -64,3 +64,11 @@
 - A matching extension name and changed version do **not** prove a common publisher or a trusted package. There is no code audit, signed publisher identity, Web Store verification or automatic update. Users must verify the extension ZIP provenance independently.
 - Per-profile cross-process leases block migration or rollback while the attached Chromium profile is running. SQLite transactions preserve all-or-nothing linkage changes and an upgrade record offers explicit rollback while both package versions remain available.
 - If linkage changes since installation, rollback fails closed and requires manual review rather than silently overwriting user choices. Package removal is blocked while an applied rollback record references it.
+
+## 2026-11-23 versioned encrypted backup KDF
+
+- New `.aglb` exports use a **v2** container header recording scrypt `log2(N)=17, r=8, p=1` (N=131,072), a fresh 16-byte salt and 12-byte nonce. AES-256-GCM authenticates this full header as associated data, so an attacker cannot silently lower the KDF work factor without a decryption failure.
+- Restores continue to recognize the **v1** container with its original scrypt `N=16,384`; existing user backups are never modified or auto-converted. Back up the originals before any migration.
+- Derivation parameters accepted by the reader are a strict allowlist, not arbitrary values from untrusted files. The implementation uses a 256 MiB scrypt memory cap. Stronger derivation consumes more memory and CPU, and does not replace a high-entropy unique backup passphrase.
+- Manual Team Hub handoff transfers either format as **opaque encrypted bytes**, without decrypting the original archive. Its 16 MiB transfer size cap and other development limitations remain.
+- The Team Hub document encryption scheme and account password hashes are separate formats; this update does **not** change their scrypt settings or claim comprehensive password-hardening across the application.

@@ -16,7 +16,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from autumn_genlogin.locks import ProfileLease, ProfileBusyError
 from autumn_genlogin.models import Profile
 from autumn_genlogin.profile_backup import (
-    MAGIC, FORMAT, MAX_METADATA, export_encrypted_profile, restore_encrypted_profile,
+    MAGIC, MAGIC_V2, KDF_PARAMS_V2, FORMAT, MAX_METADATA, export_encrypted_profile, restore_encrypted_profile,
     _key,
 )
 from autumn_genlogin.storage import Store
@@ -72,7 +72,7 @@ class EncryptedProfileBackupTests(unittest.TestCase):
     def test_roundtrip_is_encrypted_and_imports_new_profile_without_vault_proxy(self):
         self.assertEqual(self._export(),2)
         raw=self.destination.read_bytes()
-        self.assertTrue(raw.startswith(MAGIC))
+        self.assertTrue(raw.startswith(MAGIC_V2 + KDF_PARAMS_V2))
         self.assertNotIn(b"fake-cookie-session-secret-value",raw)
         self.assertNotIn(b"example.org",raw)
         restored=restore_encrypted_profile(self.store,self.destination,self.passphrase)
@@ -86,6 +86,31 @@ class EncryptedProfileBackupTests(unittest.TestCase):
                          "fake-cookie-session-secret-value")
         self.assertEqual((self.store.profile_path(restored.id)/"Preferences").read_bytes(),b"\x00\x01Hello\xff")
         self.assertEqual(len(self.store.all()),2)
+
+    def test_legacy_scrypt_backup_restores_without_upgrading_in_place(self):
+        self._archive([("browser/LegacyProfile", "file", b"synthetic-legacy")])
+        original=self.destination.read_bytes()
+        self.assertTrue(original.startswith(MAGIC))
+        restored=restore_encrypted_profile(self.store,self.destination,self.passphrase)
+        self.assertEqual(
+            (self.store.profile_path(restored.id)/"LegacyProfile").read_bytes(),
+            b"synthetic-legacy",
+        )
+        self.assertEqual(self.destination.read_bytes(),original)
+
+    def test_v2_kdf_header_is_authenticated_and_rejects_parameter_downgrade(self):
+        self._export()
+        original=self.destination.read_bytes()
+        offset=len(MAGIC_V2)
+        self.assertEqual(original[offset:offset+3], KDF_PARAMS_V2)
+        for replacement in (bytes((14, 8, 1)), bytes((255, 8, 1))):
+            with self.subTest(replacement=replacement):
+                altered=bytearray(original)
+                altered[offset:offset+3]=replacement
+                self.destination.write_bytes(altered)
+                with self.assertRaises(ValueError):
+                    restore_encrypted_profile(self.store,self.destination,self.passphrase)
+                self.assertEqual(len(self.store.all()),1)
 
     def test_wrong_passphrase_and_tamper_do_not_install_any_profile(self):
         self._export()

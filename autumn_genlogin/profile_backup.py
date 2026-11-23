@@ -22,9 +22,13 @@ from uuid import uuid4
 from .locks import ProfileLease
 from .models import Profile
 
+# v1 is retained for legacy restore only. All new exports use v2.
 MAGIC = b"AUTUMN-LOCAL-PROFILE-BACKUP-1\n"
+MAGIC_V2 = b"AUTUMN-LOCAL-PROFILE-BACKUP-2\n"
 SALT_SIZE, NONCE_SIZE, TAG_SIZE = 16, 12, 16
+KDF_PARAMS_V2 = bytes((17, 8, 1))  # log2(N), r, p; scrypt N=131072
 HEADER_SIZE = len(MAGIC) + SALT_SIZE + NONCE_SIZE
+HEADER_SIZE_V2 = len(MAGIC_V2) + len(KDF_PARAMS_V2) + SALT_SIZE + NONCE_SIZE
 FORMAT = "AutumnGenLogin/encrypted-profile-1"
 MAX_FILES = 12000
 MAX_FILE_SIZE = 256 * 1024 * 1024
@@ -41,9 +45,15 @@ def _passphrase(value: str) -> None:
         raise ValueError("Profile backup needs a passphrase of 12-1024 characters")
 
 
-def _key(passphrase: str, salt: bytes) -> bytes:
-    return hashlib.scrypt(passphrase.encode("utf-8"), salt=salt, n=2**14,
-                          r=8, p=1, dklen=32)
+def _key(passphrase: str, salt: bytes, *, log_n: int = 14,
+         r: int = 8, p: int = 1) -> bytes:
+    # Never derive with unbounded attacker-controlled KDF parameters. Older
+    # backups use v1/14; new ones pin v2/17 in an authenticated header.
+    if (log_n, r, p) not in {(14, 8, 1), (17, 8, 1)}:
+        raise ValueError("Unsupported backup key derivation parameters")
+    return hashlib.scrypt(passphrase.encode("utf-8"), salt=salt,
+                          n=1 << log_n, r=r, p=p, dklen=32,
+                          maxmem=256 * 1024 * 1024)
 
 
 def _name(value: str) -> tuple[str, ...]:
@@ -127,14 +137,20 @@ class _DecryptedReader:
         self.decryptor.finalize()  # authenticate the entire payload
 
 
-def _decryptor(key: bytes, nonce: bytes, tag: bytes):
+def _decryptor(key: bytes, nonce: bytes, tag: bytes, *, aad: bytes | None = None):
     from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-    return Cipher(algorithms.AES(key), modes.GCM(nonce, tag)).decryptor()
+    context = Cipher(algorithms.AES(key), modes.GCM(nonce, tag)).decryptor()
+    if aad is not None:
+        context.authenticate_additional_data(aad)
+    return context
 
 
-def _encryption(key: bytes, nonce: bytes):
+def _encryption(key: bytes, nonce: bytes, *, aad: bytes | None = None):
     from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-    return Cipher(algorithms.AES(key), modes.GCM(nonce)).encryptor()
+    context = Cipher(algorithms.AES(key), modes.GCM(nonce)).encryptor()
+    if aad is not None:
+        context.authenticate_additional_data(aad)
+    return context
 
 
 def export_encrypted_profile(store, profile_id: str, target: Path, passphrase: str) -> int:
@@ -164,11 +180,14 @@ def export_encrypted_profile(store, profile_id: str, target: Path, passphrase: s
         if len(manifest) > MAX_METADATA:
             raise ValueError("Profile metadata exceeds backup limit")
         salt, nonce = secrets.token_bytes(SALT_SIZE), secrets.token_bytes(NONCE_SIZE)
-        enc = _encryption(_key(passphrase, salt), nonce)
+        # The v2 header records the KDF work factor and is authenticated
+        # with AES-GCM AAD: it cannot be silently downgraded by an attacker.
+        header = MAGIC_V2 + KDF_PARAMS_V2 + salt + nonce
+        enc = _encryption(_key(passphrase, salt, log_n=17), nonce, aad=header)
         fd = os.open(target, os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_BINARY", 0), 0o600)
         try:
             with os.fdopen(fd, "wb") as output:
-                output.write(MAGIC + salt + nonce)
+                output.write(header)
                 sink = _EncryptedWriter(output, enc)
                 with tarfile.open(fileobj=sink, mode="w|", format=tarfile.PAX_FORMAT) as archive:
                     header = tarfile.TarInfo("profile.json")
@@ -198,16 +217,29 @@ def export_encrypted_profile(store, profile_id: str, target: Path, passphrase: s
 def _header(file, total: int):
     if total < HEADER_SIZE + TAG_SIZE or total > MAX_ENCRYPTED_SIZE:
         raise ValueError("Invalid encrypted profile backup size")
-    raw = file.read(HEADER_SIZE)
-    if len(raw) != HEADER_SIZE or not raw.startswith(MAGIC):
+    magic = file.read(len(MAGIC))
+    if magic == MAGIC:
+        kdf = (14, 8, 1)
+        header_size = HEADER_SIZE
+    elif magic == MAGIC_V2:
+        params = file.read(len(KDF_PARAMS_V2))
+        if params != KDF_PARAMS_V2:
+            raise ValueError("Unsupported encrypted backup KDF parameters")
+        kdf = tuple(params)
+        header_size = HEADER_SIZE_V2
+    else:
         raise ValueError("Not an AutumnGenLogin encrypted profile backup")
-    salt = raw[len(MAGIC):len(MAGIC)+SALT_SIZE]
-    nonce = raw[-NONCE_SIZE:]
+    if total < header_size + TAG_SIZE:
+        raise ValueError("Truncated encrypted profile backup")
+    salt, nonce = file.read(SALT_SIZE), file.read(NONCE_SIZE)
+    if len(salt) != SALT_SIZE or len(nonce) != NONCE_SIZE:
+        raise ValueError("Truncated encrypted profile backup header")
+    aad = magic + KDF_PARAMS_V2 + salt + nonce if magic == MAGIC_V2 else None
     file.seek(total - TAG_SIZE)
     tag = file.read(TAG_SIZE)
     if len(tag) != TAG_SIZE:
         raise ValueError("Truncated backup authentication tag")
-    return salt, nonce, tag, total - HEADER_SIZE - TAG_SIZE
+    return salt, nonce, tag, total - header_size - TAG_SIZE, header_size, kdf, aad
 
 
 def _read_manifest(raw: bytes):
@@ -245,17 +277,17 @@ def restore_encrypted_profile(store, source: Path, passphrase: str) -> Profile:
     final = None
     with source.open("rb") as file:
         total = os.fstat(file.fileno()).st_size
-        salt, nonce, tag, encrypted_size = _header(file, total)
-        key = _key(passphrase, salt)
+        salt, nonce, tag, encrypted_size, header_size, kdf, aad = _header(file, total)
+        key = _key(passphrase, salt, log_n=kdf[0], r=kdf[1], p=kdf[2])
         # First pass authenticates *before* any profile directory is created.
-        file.seek(HEADER_SIZE)
-        checker = _DecryptedReader(file, _decryptor(key, nonce, tag), encrypted_size)
+        file.seek(header_size)
+        checker = _DecryptedReader(file, _decryptor(key, nonce, tag, aad=aad), encrypted_size)
         try:
             checker.finish()
         except Exception as exc:
             raise ValueError("Wrong passphrase or corrupted encrypted backup") from exc
-        file.seek(HEADER_SIZE)
-        reader = _DecryptedReader(file, _decryptor(key, nonce, tag), encrypted_size)
+        file.seek(header_size)
+        reader = _DecryptedReader(file, _decryptor(key, nonce, tag, aad=aad), encrypted_size)
         stage = store.browser_dir / (".import-" + str(uuid4()))
         profile = None
         visited = set()
