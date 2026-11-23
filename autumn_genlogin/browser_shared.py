@@ -77,11 +77,25 @@ RECORD_SCRIPT = r"""(() => {
   }, true);
 })();"""
 
-# Evaluate on a browser-owned iframe element, not on arbitrary captured text.
-# This returns structural CSS only, never any frame URL or form content.
+# Evaluate on a browser-owned iframe element; never capture iframe URLs or values.
 FRAME_ELEMENT_SELECTOR = r"""el => {
   if (!el || !['IFRAME','FRAME'].includes(el.tagName)) return null;
-  const esc=s => window.CSS && CSS.escape ? CSS.escape(s) : s.replace(/[^a-zA-Z0-9_-]/g, '\\})();"""
+  if (el.id && window.CSS && CSS.escape) return '#' + CSS.escape(el.id);
+  const test=el.getAttribute('data-testid');
+  if (test && /^[A-Za-z0-9_-]{1,100}$/.test(test)) return '[data-testid="' + test + '"]';
+  let path=[];
+  while (el && el.tagName && path.length<6) {
+    let part=el.tagName.toLowerCase();
+    const parent=el.parentElement;
+    if (parent) {
+      const peers=Array.from(parent.children).filter(x=>x.tagName===el.tagName);
+      if (peers.length>1) part+=':nth-of-type('+(peers.indexOf(el)+1)+')';
+    }
+    path.unshift(part);
+    el=parent;
+  }
+  return path.join(' > ');
+}"""
 
 
 @dataclass
