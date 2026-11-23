@@ -1,7 +1,8 @@
 # Experimental browser-use AI agent: isolated synthetic fixture only
 
-**Not a production AutumnGenLogin feature. Not a verified AI run.**
-Updated **2026-11-21**. Source-only experiment. EXE build remains HOLD.
+**Not a production AutumnGenLogin feature. Real Ollama inference verified,
+but real browser-use agent completion NOT verified.**
+Updated **2026-11-23**. Explicitly isolated CI experiment. EXE build remains HOLD.
 
 Reference upstream:
 - [browser-use/browser-use](https://github.com/browser-use/browser-use)
@@ -46,10 +47,13 @@ by the desktop application and is **not enabled by any UI or API endpoint**.
 6. The command prints only a synthetic pass/fail marker or sanitized
    exception type. Browser/agent state is destroyed when the container exits.
 
-The `tests/test_ai_lab_policy.py` CI test uses a **fake agent** with a
-real local HTTP fixture to check preflight logic, environment isolation,
-model endpoint and bounded arguments. It **does not** install a real Ollama
-model or attest actual browser-use inference quality.
+The `tests/test_ai_lab_policy.py` Windows unit test uses a **fake agent**
+with a real local HTTP fixture to check preflight logic, environment
+isolation, model endpoint and bounded arguments. The separate opt-in
+`.github/workflows/ai-lab-inference-proof.yml` job installs an actual
+Ollama container/model and executes inference, then independently attempts
+the real browser-use agent against the synthetic fixture. A forged model
+answer without a fixture click is rejected.
 
 ## Running an operator-supervised proof of concept
 
@@ -83,13 +87,34 @@ inference has been verified in CI.
   model file permissions, Chromium profile lifecycle and network egress
   require independent runtime verification, ideally on a fresh machine.
   The marker `AUTUMN_AI_LAB_ISOLATED=1` **does not** create a sandbox.
-- The code may need compatibility fixes after the independent
-  `browser-use==1.0.7` image and Ollama endpoint are actually executed.
-  Source tests alone are not AI automation acceptance.
-- No screenshot/secret leakage test is possible without a real model run,
-  so the AI lab has no path into the production app until those checks pass.
+- An actual `browser-use==1.0.7` Docker agent and Ollama endpoint
+  **were executed** in independent GitHub CI on 2026-11-23. The 0.5B model
+  reported the success marker without the fixture observing a click
+  (`button_clicked=false`). The follow-up 1.5B run also failed to click.
+  These are **real, negative agent acceptance results**, not a vendor
+  feature completion. No model answer or page content was logged.
+- Real Ollama inference passed in the same isolated Docker runtime. An
+  inference PASS is not browser-use task completion. A separate synthetic
+  button-click signal and final report marker are both required for the
+  agent to return PASS.
+- Production AI integration, screenshot leakage review, approved model/image
+  digest pinning, long-run behavior and isolation penetration testing all
+  remain unaccepted. No real profiles/accounts are used by this CI.
 - Even with `allowed_domains`, the agent may issue Python network requests;
   container network isolation is a required independent control.
 - Do not use this for CAPTCHA bypass, anti-fraud evasion, Sybil activity,
   mass-login workflows, commercial websites or personal accounts.
 - No consented GenLogin/Titan parity evidence is implied or acquired.
+
+### Actual GitHub Actions evidence on 2026-11-23
+
+- [Real model inference, agent NOT verified: run 45140938605](https://github.com/thongheo0806-byte/GenLogin-free/actions/runs/45140938605)
+- [Explicit hallucinated click regression: run 45141482823](https://github.com/thongheo0806-byte/GenLogin-free/actions/runs/45141482823)
+- [Larger 1.5B model still missed the click: run 45142114583](https://github.com/thongheo0806-byte/GenLogin-free/actions/runs/45142114583)
+
+The latter two runs proved Docker/model startup and actual inference while
+recording `button_clicked=false`. Cleanup succeeded after fixing
+container-root-owned temporary model file removal. The proof workflow is
+**manual-dispatch only** to avoid repeated multi-GB image/model downloads.
+Its status is experimental; a red agent result is intentionally not hidden
+or reclassified as a pass.
