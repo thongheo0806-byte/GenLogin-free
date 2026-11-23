@@ -2,7 +2,11 @@
 from __future__ import annotations
 
 import unittest
+from uuid import uuid4
+from types import SimpleNamespace
+import asyncio
 
+from autumn_genlogin.browser_shared import SharedBrowserManager
 from autumn_genlogin.models import validated_steps
 from autumn_genlogin.recording import (
     append_recorded_event, review_recording, sanitize_recorded_event,
@@ -50,6 +54,65 @@ class TabFrameContextTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             validated_steps([{"action":"goto","url":"http://127.0.0.1:8080",
                               "tab_index":0,"tab_count":1}])
+
+
+    def test_browser_owned_live_identity_tokens_survive_review_not_forged_payload(self):
+        token,frame=str(uuid4()),str(uuid4())
+        forged={"action":"click","selector":"#safe",
+                "tab_token":str(uuid4()),"frame_tokens":[str(uuid4())]}
+        events=[]
+        self.assertTrue(append_recorded_event(
+            events,forged,context={"tab_index":0,"tab_count":1,
+                                  "tab_token":token,
+                                  "frames":["#inside"],"frame_tokens":[frame]}))
+        self.assertEqual(events,[{
+            "action":"click","selector":"#safe",
+            "tab_index":0,"tab_count":1,"tab_token":token,
+            "frames":["#inside"],"frame_tokens":[frame]
+        }])
+        self.assertEqual(review_recording(events).steps,events)
+        self.assertNotIn(forged["tab_token"],repr(events))
+
+    def test_live_identity_schema_rejects_malformed_and_missing_frame_tokens(self):
+        token,frame=str(uuid4()),str(uuid4())
+        basic={"action":"click","selector":"#safe",
+               "tab_index":0,"tab_count":1,"tab_token":token}
+        self.assertEqual(validated_steps([basic])[0],basic)
+        frame_step={**basic,"frames":["#inner"],"frame_tokens":[frame]}
+        self.assertEqual(validated_steps([frame_step])[0],frame_step)
+        for invalid in (
+            {**basic,"tab_token":"invalid-token"},
+            {**basic,"tab_token":123},
+            {**basic,"frames":["#inner"]},
+            {**frame_step,"frame_tokens":[]},
+            {**frame_step,"frame_tokens":[token,frame]},
+            {**frame_step,"frame_tokens":"string"},
+            {**frame_step,"frame_tokens":["00000000-0000-0000-0000-000000000000"]},
+            {"action":"click","selector":"#safe","tab_token":token},
+        ):
+            with self.subTest(invalid=invalid),self.assertRaises(ValueError):
+                validated_steps([invalid])
+
+    def test_runtime_rejects_replaced_page_with_identical_tab_count(self):
+        original=object()
+        replacement=object()
+        token=str(uuid4())
+        state=SimpleNamespace(
+            context=SimpleNamespace(pages=[replacement]),
+            recorder_tab_tokens={original:token},recorder_frame_tokens={}
+        )
+        step={"action":"click","selector":"#safe",
+              "tab_index":0,"tab_count":1,"tab_token":token}
+        async def exercise():
+            with self.assertRaisesRegex(RuntimeError,"tab identity changed"):
+                await SharedBrowserManager._dom_scope(None,state,step)
+            with self.assertRaisesRegex(RuntimeError,"Legacy recording"):
+                await SharedBrowserManager._dom_scope(
+                    None,state,{k:v for k,v in step.items() if k!="tab_token"})
+            state.context.pages=[original]
+            self.assertIs(await SharedBrowserManager._dom_scope(None,state,step),
+                          original)
+        asyncio.run(exercise())
 
 
 if __name__=="__main__":

@@ -117,6 +117,10 @@ class Session:
     recorder_page: object = None
     recorder_ignored_pages: set[int] = field(default_factory=set)
     recorder_selected_page_closed: bool = False
+    # Playwright object -> random recorder identity, scoped to this live
+    # session. Never capture URLs, titles or cookie/session data.
+    recorder_tab_tokens: dict[object,str] = field(default_factory=dict)
+    recorder_frame_tokens: dict[object,str] = field(default_factory=dict)
 
 
 class SharedBrowserManager:
@@ -459,31 +463,50 @@ class SharedBrowserManager:
     async def _dom_scope(self,session,step):
         """Resolve a trusted recorded tab/frame chain or fail closed.
 
-        Never silently replay a second-tab action against the first tab, or
-        use a selector from an iframe in its parent document. Ordinals are
-        only a structural guard; the user must still review tab identities.
+        Ordinals are a structural guard, not proof of page identity. Require
+        random recorder-owned tokens bound to the *same live Playwright Page
+        and Frame objects*. Legacy recordings and reopened contexts fail
+        closed rather than triggering an action on the wrong browser tab.
         """
         if "tab_index" not in step:
             return await self._page(session)
+        if "tab_token" not in step:
+            raise RuntimeError("Legacy recording lacks live tab identity; re-record before replay")
         pages = list(session.context.pages)
         if len(pages) != step["tab_count"]:
             raise RuntimeError("Recorded tab count changed; review browser tabs before replay")
         page = pages[step["tab_index"]]
+        if session.recorder_tab_tokens.get(page) != step["tab_token"]:
+            raise RuntimeError("Recorded tab identity changed; re-record before replay")
         scope = page
-        for selector in step.get("frames", []):
-            if await scope.locator(selector).count() != 1:
+        for selector, token in zip(step.get("frames",[]),step.get("frame_tokens",[])):
+            locator=scope.locator(selector)
+            if await locator.count() != 1:
                 raise RuntimeError("Recorded iframe target missing or ambiguous")
-            scope = scope.frame_locator(selector)
+            handle=await locator.element_handle()
+            child=await handle.content_frame() if handle else None
+            if child is None or session.recorder_frame_tokens.get(child)!=token:
+                raise RuntimeError("Recorded iframe identity changed; re-record before replay")
+            scope=scope.frame_locator(selector)
         return scope
 
     async def _action(self,session,step,i):
         pid=session.profile.id
         page=await self._page(session) if "tab_index" not in step else None
         scope=await self._dom_scope(session,step) if "selector" in step else page
+        # Playwright's .first can silently change the target on duplicate IDs
+        # or after DOM mutations. Recorded selectors must remain *unique*.
+        target=scope.locator(step["selector"]) if "selector" in step else None
+        if target is not None:
+            if "tab_token" in step:
+                if await target.count()!=1:
+                    raise RuntimeError("Recorded target selector missing or ambiguous")
+            else:
+                target=target.first
         action=step["action"]
         self.events.put((pid,"log",f"Step {i}: {action}"))
         if action=="goto":await page.goto(step["url"],wait_until="domcontentloaded",timeout=30000)
-        elif action=="click":await scope.locator(step["selector"]).first.click(timeout=20000)
+        elif action=="click":await target.click(timeout=20000)
         elif action=="click_image":
             def read_template():
                 try:
@@ -497,13 +520,13 @@ class SharedBrowserManager:
             if session.cancel.is_set():
                 raise asyncio.CancelledError()
             await page.mouse.click(x,y)
-        elif action=="fill":await scope.locator(step["selector"]).first.fill(step["text"],timeout=20000)
-        elif action=="press":await scope.locator(step["selector"]).first.press(step["key"],timeout=20000)
-        elif action=="check":await scope.locator(step["selector"]).first.check(timeout=20000)
-        elif action=="uncheck":await scope.locator(step["selector"]).first.uncheck(timeout=20000)
-        elif action=="select_option":await scope.locator(step["selector"]).first.select_option(step["value"],timeout=20000)
-        elif action=="scroll_into_view":await scope.locator(step["selector"]).first.scroll_into_view_if_needed(timeout=20000)
-        elif action=="wait_for":await scope.locator(step["selector"]).first.wait_for(timeout=20000)
+        elif action=="fill":await target.fill(step["text"],timeout=20000)
+        elif action=="press":await target.press(step["key"],timeout=20000)
+        elif action=="check":await target.check(timeout=20000)
+        elif action=="uncheck":await target.uncheck(timeout=20000)
+        elif action=="select_option":await target.select_option(step["value"],timeout=20000)
+        elif action=="scroll_into_view":await target.scroll_into_view_if_needed(timeout=20000)
+        elif action=="wait_for":await target.wait_for(timeout=20000)
         elif action=="wait":
             remaining=step["seconds"]
             while remaining>0 and not session.cancel.is_set():
@@ -517,7 +540,7 @@ class SharedBrowserManager:
             await page.screenshot(path=str(target),full_page=True)
             self.events.put((pid,"log",f"Screenshot saved: {target}"))
         elif action=="extract_text":
-            value=await scope.locator(step["selector"]).first.inner_text(timeout=20000)
+            value=await target.inner_text(timeout=20000)
             with self._lock:
                 result=self._runs.get(pid)
                 if result and len(result["extracted"])<20:
@@ -582,6 +605,8 @@ class SharedBrowserManager:
             session.recorded=[]
             session.recorded_navigation_count=0
             session.recorder_page=selected
+            session.recorder_tab_tokens={}
+            session.recorder_frame_tokens={}
             session.recorder_ignored_pages=set()
             session.recorder_selected_page_closed=False
             session.recording=True
@@ -622,6 +647,7 @@ class SharedBrowserManager:
                 if page not in pages or len(pages)>12:
                     return
                 chain=[]
+                frame_objects=[]
                 cursor=frame
                 try:
                     while cursor is not page.main_frame:
@@ -632,15 +658,33 @@ class SharedBrowserManager:
                         if not isinstance(selector,str):
                             return
                         chain.insert(0,selector)
+                        frame_objects.insert(0,cursor)
                         cursor=cursor.parent_frame
                 except Exception:
                     # Detached frame cannot yield a stable replay target.
                     return
                 # Only Playwright may supply these context fields; a page may
-                # call the binding directly but cannot forge the tab/frames.
-                context={"tab_index":pages.index(page),"tab_count":len(pages)}
-                if chain:
-                    context["frames"]=chain
+                # invoke the binding directly but cannot forge tab/frame IDs.
+                # Keep a small bounded dictionary of live object identities.
+                with self._lock:
+                    if not session.recording:
+                        return
+                    if page not in session.recorder_tab_tokens:
+                        if len(session.recorder_tab_tokens)>=128:
+                            return
+                        session.recorder_tab_tokens[page]=str(uuid4())
+                    context={"tab_index":pages.index(page),"tab_count":len(pages),
+                             "tab_token":session.recorder_tab_tokens[page]}
+                    if chain:
+                        context["frames"]=chain
+                        tokens=[]
+                        for obj in frame_objects:
+                            if obj not in session.recorder_frame_tokens:
+                                if len(session.recorder_frame_tokens)>=128:
+                                    return
+                                session.recorder_frame_tokens[obj]=str(uuid4())
+                            tokens.append(session.recorder_frame_tokens[obj])
+                        context["frame_tokens"]=tokens
                 with self._lock:
                     if not session.recording:
                         return

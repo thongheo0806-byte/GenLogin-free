@@ -417,6 +417,56 @@ class SharedBrowserRealTests(unittest.TestCase):
             return await context.pages[1].frame_locator("#nestedQa").locator("body").get_attribute("data-hit")
         self.assertEqual(self.manager._submit(read_result()).result(timeout=10),"yes")
 
+        # A duplicate selector in the *same* recorded frame may point at a
+        # different control if .first is used. Recorder replay must refuse.
+        async def duplicate_recorded_control():
+            page=self.manager._sessions[profile.id].context.pages[1]
+            await page.frame_locator("#nestedQa").locator("body").evaluate(
+                """(body) => {
+                    const original=body.querySelector('#inside');
+                    const extra=original.cloneNode(true);
+                    extra.setAttribute('data-duplicate-for-qa','1');
+                    body.appendChild(extra);
+                }""")
+        self.manager._submit(duplicate_recorded_control()).result(timeout=10)
+        self.manager.run_steps(profile.id,iframe_actions)
+        self.assertTrue(eventually(
+            lambda:(self.manager.last_run(profile.id) or {}).get("status")=="failed"))
+        self.assertIn("selector missing or ambiguous",
+                      self.manager.last_run(profile.id)["error"])
+
+        # Replacing an iframe with an identical selector must invalidate its
+        # Playwright Frame identity, even if tab order and count stay equal.
+        async def replace_frame_same_selector():
+            page=self.manager._sessions[profile.id].context.pages[1]
+            await page.evaluate("""() => {
+              const existing=document.querySelector('#nestedQa');
+              const replacement=existing.cloneNode(true);
+              existing.replaceWith(replacement);
+            }""")
+            await page.frame_locator("#nestedQa").locator("#inside").wait_for()
+        self.manager._submit(replace_frame_same_selector()).result(timeout=15)
+        self.manager.run_steps(profile.id,iframe_actions)
+        self.assertTrue(eventually(
+            lambda:(self.manager.last_run(profile.id) or {}).get("status")=="failed"))
+        self.assertIn("iframe identity changed",
+                      self.manager.last_run(profile.id)["error"])
+
+        # Closing tab two and opening a different tab preserves tab count
+        # and ordinal, but must NOT reuse the old recorder identity.
+        async def replace_tab_same_count():
+            context=self.manager._sessions[profile.id].context
+            await context.pages[1].close()
+            new_tab=await context.new_page()
+            await new_tab.goto(self.origin,wait_until="domcontentloaded")
+            assert len(context.pages)==2
+        self.manager._submit(replace_tab_same_count()).result(timeout=15)
+        self.manager.run_steps(profile.id,iframe_actions)
+        self.assertTrue(eventually(
+            lambda:(self.manager.last_run(profile.id) or {}).get("status")=="failed"))
+        self.assertIn("tab identity changed",
+                      self.manager.last_run(profile.id)["error"])
+
         # A changed tab count must fail rather than silently redirect a click.
         async def add_third_tab():
             await self.manager._sessions[profile.id].context.new_page()

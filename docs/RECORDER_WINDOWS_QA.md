@@ -129,3 +129,28 @@ post-destroy Tcl warnings surfaced by pywinauto GUI acceptance.
 Still unsupported: deliberate cross-tab workflow replay, complex
 iframe selectors, typing playback, URL/query capture, video capture,
 visual-target reliability, and exhaustive OpenAdapt task parity.
+
+## 2026-11-23 strict live Page/Frame replay identity (development)
+
+- Recorder actions in newly captured tabs carry a random v4 UUID token
+  assigned by **Playwright**, not supplied by the page. Nested iframe actions
+  also carry an ordered list of opaque live Frame tokens. No URL, query,
+  tab title, cookies, typed values or iframe document text is recorded.
+- The step runner checks **both** tab count/index **and** the identity token
+  of the original live Playwright Page. For nested frames it resolves each
+  unique iframe element and verifies its Frame identity before executing.
+  A replacement tab/iframe with the same index and selector fails closed.
+- Recorded DOM selectors must match exactly **one** target at execution.
+  Repeated IDs or changing selectors are refused, not resolved by
+  silently picking the first match.
+- This strict replay applies only while the original browser session and
+  observed frame objects are still alive. Saving/reopening a workflow cannot
+  resurrect those object identities: previously captured actions must be
+  re-recorded on a new session. Older ordinal-only recorded steps fail
+  at runtime with an explicit re-record instruction.
+- A live Page/Frame token verifies object identity, **not document/content
+  identity after navigation**. Review actions immediately before replay,
+  especially if the page has navigated or content has updated. Durable
+  cross-session semantic re-binding requires a separate explicit design,
+  consent and regression tests. These additions do not establish full
+  GenLogin/Titan/OpenAdapt recorder parity.
