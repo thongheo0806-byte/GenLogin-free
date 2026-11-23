@@ -122,6 +122,15 @@ class MiniAppLibrary:
                 signature TEXT NOT NULL,
                 FOREIGN KEY(miniapp_id) REFERENCES miniapps(id) ON DELETE CASCADE
             )""")
+            # Publisher identity survives uninstall, unlike per-package attestations.
+            conn.execute("""CREATE TABLE IF NOT EXISTS miniapp_name_pins (
+                name TEXT PRIMARY KEY, fingerprint TEXT NOT NULL
+            )""")
+            conn.execute(
+                "INSERT OR IGNORE INTO miniapp_name_pins(name,fingerprint) "
+                "SELECT m.name,a.fingerprint FROM miniapp_attestations a "
+                "JOIN miniapps m ON m.id=a.miniapp_id ORDER BY m.name"
+            )
 
     def trust_publisher(self, label: str, public_key: str) -> str:
         """User explicitly pins a 32-byte Ed25519 public key after review."""
@@ -188,8 +197,21 @@ class MiniAppLibrary:
         with self.store._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             existing_signature=None
+            pin=conn.execute(
+                "SELECT fingerprint FROM miniapp_name_pins WHERE name=?",
+                (checked["name"],)).fetchone()
+            if signer is None and pin is not None:
+                # Existing identical signed package is an idempotent import.
+                # No other unsigned version can borrow this publisher's name.
+                signed_ident=conn.execute(
+                    "SELECT 1 FROM miniapp_attestations WHERE miniapp_id=? "
+                    "AND fingerprint=?", (ident,pin["fingerprint"])).fetchone()
+                if signed_ident is None:
+                    raise ValueError("Miniapp name is pinned to a signed publisher; unsigned updates are refused")
             if signer is not None:
                 fingerprint,public_key,signature=signer
+                if pin is not None and pin["fingerprint"]!=fingerprint:
+                    raise ValueError("Miniapp name is already pinned to another publisher key")
                 trusted=conn.execute(
                     "SELECT public_key FROM miniapp_publishers WHERE fingerprint=?",
                     (fingerprint,)).fetchone()
@@ -224,6 +246,9 @@ class MiniAppLibrary:
             if signer is not None and existing_signature is None:
                 conn.execute("INSERT INTO miniapp_attestations VALUES(?,?,?,?)",
                              (ident,fingerprint,public_key,signature))
+            if signer is not None and pin is None:
+                conn.execute("INSERT INTO miniapp_name_pins(name,fingerprint) VALUES(?,?)",
+                             (checked["name"],fingerprint))
         return self._record(ident)
 
     def _record(self, ident: str) -> MiniAppRecord:
@@ -262,10 +287,23 @@ class MiniAppLibrary:
                                  row["installed_at_utc"],status,fingerprint)
 
     def list(self) -> list[MiniAppRecord]:
+        # A bad local row is visible as invalid, but cannot hide healthy apps.
         with self.store._connect() as conn:
-            ids=[r[0] for r in conn.execute(
-                "SELECT id FROM miniapps ORDER BY name,version")]
-        return [self._record(ident) for ident in ids]
+            rows=conn.execute(
+                "SELECT id,installed_at_utc FROM miniapps ORDER BY name,version"
+            ).fetchall()
+        result=[]
+        for row in rows:
+            try:
+                result.append(self._record(row["id"]))
+            except (ValueError, TypeError, KeyError, UnicodeError):
+                result.append(MiniAppRecord(
+                    id=row["id"], name="[Invalid stored Miniapp]", version="?",
+                    category="QA", description="Stored manifest or signature failed validation",
+                    steps=0, origins=(), installed_at_utc=row["installed_at_utc"],
+                    signature_status="invalid",
+                ))
+        return result
 
     def get(self, ident: str) -> dict:
         record=self._record(ident)
@@ -278,6 +316,10 @@ class MiniAppLibrary:
         return validate_miniapp(json.loads(row["manifest"]))
 
     def remove(self, ident: str) -> None:
-        self._record(ident)
+        # Permit deliberate cleanup of corrupt entries without loading them.
+        if not isinstance(ident,str) or not _IDENT.fullmatch(ident):
+            raise ValueError("Invalid miniapp ID")
         with self.store._connect() as conn:
-            conn.execute("DELETE FROM miniapps WHERE id=?",(ident,))
+            removed=conn.execute("DELETE FROM miniapps WHERE id=?",(ident,))
+            if removed.rowcount!=1:
+                raise KeyError("Miniapp not found")
