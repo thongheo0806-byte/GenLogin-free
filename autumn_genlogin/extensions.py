@@ -94,7 +94,7 @@ class ExtensionLibrary:
         self.store = store
         self.directory = store.base / "extensions"
         self.directory.mkdir(parents=True, exist_ok=True)
-        with store._connect() as conn:
+        with store.transaction() as conn:
             conn.execute("""CREATE TABLE IF NOT EXISTS extension_packages (
                 id TEXT PRIMARY KEY, name TEXT NOT NULL, version TEXT NOT NULL,
                 permissions TEXT NOT NULL, host_permissions TEXT NOT NULL)""")
@@ -113,7 +113,7 @@ class ExtensionLibrary:
             )""")
 
     def list(self) -> list[ExtensionRecord]:
-        with self.store._connect() as conn:
+        with self.store.transaction() as conn:
             rows = conn.execute("SELECT * FROM extension_packages ORDER BY name, id").fetchall()
         return [ExtensionRecord(row["id"], row["name"], row["version"],
                                 tuple(json.loads(row["permissions"])), tuple(json.loads(row["host_permissions"]))) for row in rows]
@@ -155,7 +155,7 @@ class ExtensionLibrary:
                                      tuple(manifest.get("permissions", [])), tuple(manifest.get("host_permissions", [])))
             os.replace(staged, target)
             try:
-                with self.store._connect() as conn:
+                with self.store.transaction() as conn:
                     conn.execute("INSERT INTO extension_packages VALUES (?,?,?,?,?)",
                                  (record.id, record.name, record.version, json.dumps(record.permissions), json.dumps(record.host_permissions)))
             except BaseException:
@@ -180,21 +180,21 @@ class ExtensionLibrary:
         if profile.browser != "chromium":
             raise ValueError("Unpacked extensions require bundled Playwright Chromium (not Chrome/Edge)")
         self._get(extension_id)
-        with self.store._connect() as conn:
+        with self.store.transaction() as conn:
             conn.execute("INSERT OR IGNORE INTO profile_extensions VALUES (?,?)", (profile_id, extension_id))
 
     def detach(self, profile_id: str, extension_id: str) -> None:
         profile_id, extension_id = str(UUID(profile_id)), str(UUID(extension_id))
-        with self.store._connect() as conn:
+        with self.store.transaction() as conn:
             conn.execute("DELETE FROM profile_extensions WHERE profile_id=? AND extension_id=?", (profile_id, extension_id))
 
     def attached_ids(self, profile_id: str) -> list[str]:
         profile_id = str(UUID(profile_id))
-        with self.store._connect() as conn:
+        with self.store.transaction() as conn:
             return [r[0] for r in conn.execute("SELECT extension_id FROM profile_extensions WHERE profile_id=? ORDER BY extension_id", (profile_id,))]
 
     def _get(self, extension_id: str) -> ExtensionRecord:
-        with self.store._connect() as conn:
+        with self.store.transaction() as conn:
             row = conn.execute("SELECT * FROM extension_packages WHERE id=?", (str(UUID(extension_id)),)).fetchone()
         if row is None:
             raise KeyError("Extension not found")
@@ -215,7 +215,7 @@ class ExtensionLibrary:
         return paths
 
     def list_upgrades(self) -> list[ExtensionUpgrade]:
-        with self.store._connect() as conn:
+        with self.store.transaction() as conn:
             rows = conn.execute("SELECT * FROM extension_upgrades ORDER BY rowid DESC").fetchall()
         return [ExtensionUpgrade(row["id"], row["old_id"], row["new_id"],
                                  tuple(json.loads(row["attached_json"])),
@@ -243,7 +243,7 @@ class ExtensionLibrary:
         old, new = self._get(old_id), self._get(new_id)
         if old.id == new.id or old.name != new.name or old.version == new.version:
             raise ValueError("Incompatible extension update")
-        with self.store._connect() as conn:
+        with self.store.transaction() as conn:
             ids = [r[0] for r in conn.execute(
                 "SELECT profile_id FROM profile_extensions WHERE extension_id=? ORDER BY profile_id",
                 (old.id,))]
@@ -251,7 +251,7 @@ class ExtensionLibrary:
         with ExitStack() as leases:
             for pid in ids:
                 leases.enter_context(ProfileLease(self.store.base, pid))
-            with self.store._connect() as conn:
+            with self.store.transaction() as conn:
                 conn.execute("BEGIN IMMEDIATE")
                 found = [r[0] for r in conn.execute(
                     "SELECT profile_id FROM profile_extensions WHERE extension_id=? ORDER BY profile_id",
@@ -276,7 +276,7 @@ class ExtensionLibrary:
 
     def rollback_update(self, upgrade_id: str) -> ExtensionUpgrade:
         upgrade_id = str(UUID(upgrade_id))
-        with self.store._connect() as conn:
+        with self.store.transaction() as conn:
             row = conn.execute("SELECT * FROM extension_upgrades WHERE id=?",(upgrade_id,)).fetchone()
         if row is None:
             raise KeyError("Extension update not found")
@@ -289,7 +289,7 @@ class ExtensionLibrary:
         with ExitStack() as leases:
             for pid in sorted(ids):
                 leases.enter_context(ProfileLease(self.store.base, pid))
-            with self.store._connect() as conn:
+            with self.store.transaction() as conn:
                 conn.execute("BEGIN IMMEDIATE")
                 fresh = conn.execute("SELECT status FROM extension_upgrades WHERE id=?",
                                      (upgrade_id,)).fetchone()
@@ -312,7 +312,7 @@ class ExtensionLibrary:
     def remove(self, extension_id: str) -> None:
         extension_id = str(UUID(extension_id))
         self._get(extension_id)
-        with self.store._connect() as conn:
+        with self.store.transaction() as conn:
             pending = conn.execute(
                 "SELECT 1 FROM extension_upgrades WHERE status='applied' "
                 "AND (old_id=? OR new_id=?) LIMIT 1",
