@@ -167,7 +167,12 @@ class WindowsPywinautoSmokeTests(unittest.TestCase):
                 root.update()
                 main=next(n for n in descendants(root)
                           if isinstance(n,ttk.Notebook) and len(n.tabs())==9)
-                click(main,root,main.bbox(1))
+                # Hosted Windows desktop may report an empty Notebook tab
+                # bbox even when its contents are real Win32-visible widgets.
+                # Select the container via Tk, then drive the editor controls
+                # with genuine OS pointer events below.
+                main.select(1)
+                root.update()
                 self.assertEqual(main.index("current"),1)
                 initial=app.builder.get_steps()
                 tree=app.builder.tree
@@ -185,7 +190,8 @@ class WindowsPywinautoSmokeTests(unittest.TestCase):
                 self.assertEqual(len(app.builder.get_steps()),len(initial)+1)
                 click(next(b for b in buttons if b.cget("text")=="Remove"),root)
                 self.assertEqual(app.builder.get_steps(),initial)
-                click(app.flow_tabs,root,app.flow_tabs.bbox(1))
+                app.flow_tabs.select(1)
+                root.update()
                 self.assertEqual(app.flow_tabs.index("current"),1)
                 self.assertEqual(json.loads(app.workflow.get("1.0","end")),initial)
             finally:
