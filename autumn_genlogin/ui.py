@@ -1097,19 +1097,41 @@ class App:
         self.refresh_schedules()
 
     def refresh_schedules(self):
-        self.schedule_tree.delete(*self.schedule_tree.get_children())
-        for job in self.schedule_store.list():
-            self.schedule_tree.insert("", "end", iid=job.id,
-                values=(job.profile_id[:8],job.next_run_utc, job.interval_seconds or "once",job.last_status))
-        self.schedule_history_tree.delete(*self.schedule_history_tree.get_children())
-        for run in self.schedule_store.history(limit=50):
-            self.schedule_history_tree.insert("", "end", iid=run.id,
-                values=(run.job_id[:8],run.profile_id[:8],run.started_utc,
-                        run.finished_utc or "",run.status,run.error_type))
+        """Snapshot schedules off-Tk, discard older out-of-order replies."""
+        self._schedule_refresh_generation = (
+            getattr(self, "_schedule_refresh_generation", 0) + 1)
+        generation = self._schedule_refresh_generation
+
+        def snapshot():
+            return (self.schedule_store.list(),
+                    self.schedule_store.history(limit=50))
+
+        def render(results):
+            if generation != self._schedule_refresh_generation:
+                return
+            jobs, runs = results
+            previous = set(self.schedule_tree.selection())
+            self.schedule_tree.delete(*self.schedule_tree.get_children())
+            for job in jobs:
+                self.schedule_tree.insert("", "end", iid=job.id,
+                    values=(job.profile_id[:8], job.next_run_utc,
+                            job.interval_seconds or "once", job.last_status))
+            still_here = [pid for pid in previous if self.schedule_tree.exists(pid)]
+            if still_here:
+                self.schedule_tree.selection_set(still_here)
+            self.schedule_history_tree.delete(
+                *self.schedule_history_tree.get_children())
+            for run in runs:
+                self.schedule_history_tree.insert("", "end", iid=run.id,
+                    values=(run.job_id[:8], run.profile_id[:8], run.started_utc,
+                            run.finished_utc or "", run.status, run.error_type))
+
+        self._run_ui_task(snapshot, render, title="Schedule refresh")
 
     def schedule_workflow(self):
         pid = self.selected_id()
-        if not pid: return
+        if not pid:
+            return
         try:
             delay = float(self.schedule_delay.get())
             interval = float(self.schedule_interval.get())
@@ -1117,24 +1139,36 @@ class App:
                 raise ValueError("Invalid schedule time")
             if interval and (interval < 1 or not interval.is_integer()):
                 raise ValueError("Repeat every 1 minute or longer in whole minutes")
-            job=self.schedule_store.add(pid, self.current_steps(),
-                datetime.now().astimezone()+timedelta(minutes=delay),int(interval*60) if interval else None)
-            self.refresh_schedules()
-            self.notice("Scheduled job " + job[:8])
+            # Read the workflow editor exclusively on Tk; do disk/database
+            # work on the worker and only touch widgets in the completion.
+            flow = self.current_steps()
+            due = datetime.now().astimezone() + timedelta(minutes=delay)
         except Exception as exc:
-            messagebox.showerror("Schedule error", str(exc), parent=self.root)
+            return messagebox.showerror("Schedule error", str(exc), parent=self.root)
+
+        def done(ident):
+            self.refresh_schedules()
+            self.notice("Scheduled job " + ident[:8])
+
+        self._run_ui_task(
+            lambda: self.schedule_store.add(
+                pid, flow, due, int(interval * 60) if interval else None),
+            done, title="Schedule save")
 
     def remove_schedule(self):
-        selection=self.schedule_tree.selection()
+        selection = self.schedule_tree.selection()
         if selection:
-            self.schedule_store.remove(selection[0]);self.refresh_schedules()
+            ident = selection[0]
+            self._run_ui_task(
+                lambda: self.schedule_store.remove(ident),
+                lambda _: self.refresh_schedules(), title="Schedule remove")
 
     def retry_schedule(self):
-        selection=self.schedule_tree.selection()
+        selection = self.schedule_tree.selection()
         if not selection:
             return
-        # A crash after the browser accepted a job but before the database
-        # acknowledged it makes execution uncertain. Require explicit consent.
+        # An uncertain task may already have reached the external website.
+        # Never automatically replay a one-time job after a crash.
         if not messagebox.askyesno("Retry scheduled task",
                                    "Retry only a failed/uncertain one-time task.\n\n"
                                    "WARNING: an uncertain task may already have started, "
@@ -1142,12 +1176,15 @@ class App:
                                    "Do you want to retry?",
                                    parent=self.root):
             return
-        try:
-            self.schedule_store.retry_one_shot(selection[0])
+        ident = selection[0]
+
+        def done(_):
             self.refresh_schedules()
             self.notice("One-time schedule queued for explicit retry")
-        except Exception as exc:
-            messagebox.showerror("Schedule retry", str(exc), parent=self.root)
+
+        self._run_ui_task(
+            lambda: self.schedule_store.retry_one_shot(ident), done,
+            title="Schedule retry")
 
     def _build_cloud_tab(self,frame):
         ttk.Label(frame, text="Opt-in encrypted team sync and manual archive handoff",style="Heading.TLabel").pack(anchor="w", pady=8)
