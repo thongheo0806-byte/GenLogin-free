@@ -314,8 +314,10 @@ class TkinterSmokeTests(unittest.TestCase):
                     self.assertTrue(pump(heartbeat.is_set,seconds=1),
                                     "Slow metadata merge blocked Tk event loop")
                     release.set()
-                    self.assertTrue(pump(lambda:app.store.get(source.id).name==source.name),
-                                    "Worker did not install metadata")
+                    self.assertTrue(pump(
+                        lambda:any(p.id==source.id and p.name==source.name
+                                   for p in app.store.all())),
+                        "Worker did not install metadata")
                     self.assertTrue(pump(lambda:bool(app.cloud_bases)),
                                     "Tk did not accept remote baseline after apply")
             finally:
