@@ -21,7 +21,7 @@ ALLOWED_RECORDED_ACTIONS = frozenset(
 ALLOWED_RECORDED_KEYS = frozenset({"Enter", "Tab", "Escape"})
 
 
-def sanitize_recorded_event(payload: object) -> dict | None:
+def sanitize_recorded_event(payload: object, *, allow_context: bool = False) -> dict | None:
     """Return a strict, value-free action, ignoring untrusted page extras.
 
     A website can invoke an exposed Playwright binding itself. Never allow
@@ -49,18 +49,35 @@ def sanitize_recorded_event(payload: object) -> dict | None:
         step = {"action": "press", "selector": selector, "key": key}
     else:
         step = {"action": kind, "selector": selector}
+    if allow_context and "tab_index" in payload:
+        # Stored recorder context is derived from Playwright source objects;
+        # page-supplied context fields are ALWAYS discarded by default.
+        step["tab_index"] = payload["tab_index"]
+        step["tab_count"] = payload.get("tab_count")
+        if "frames" in payload:
+            step["frames"] = payload["frames"]
     try:
         return validated_steps([step])[0]
     except (TypeError, ValueError):
         return None
 
 
-def append_recorded_event(events: list[dict], payload: object) -> bool:
+def append_recorded_event(events: list[dict], payload: object, *,
+                          context: dict | None = None) -> bool:
     if len(events) >= MAX_RECORDED_STEPS:
         return False
+    # Never trust a page-provided tab/frame index. Only Playwright's binding
+    # source may supply context, independently of the untrusted payload.
     item = sanitize_recorded_event(payload)
     if item is None:
         return False
+    if context is not None:
+        if not isinstance(context, dict):
+            return False
+        candidate = {**item, **context}
+        item = sanitize_recorded_event(candidate, allow_context=True)
+        if item is None:
+            return False
     # Consecutive browser 'change' events often report the same field twice.
     # Clicks are never deduplicated: a repeated click can be meaningful.
     if item["action"] in {"fill", "select_option", "check", "uncheck"}:
@@ -99,7 +116,7 @@ def review_recording(events: list[dict], *, navigation_boundaries: int = 0,
         raise ValueError("Invalid ignored-tab count")
     # Re-scrub all events: no path through importing a recording may restore
     # typed input values sent by a malicious page or outdated recorder.
-    cleaned = [sanitize_recorded_event(x) for x in events]
+    cleaned = [sanitize_recorded_event(x, allow_context=True) for x in events]
     if any(x is None for x in cleaned):
         raise ValueError("Recorded event is not eligible for replay")
     redacted = sum(x["action"] in {"fill", "select_option"} for x in cleaned)
@@ -115,8 +132,17 @@ def review_recording(events: list[dict], *, navigation_boundaries: int = 0,
         )
     if ignored_tabs:
         warnings.append(
-            f"{ignored_tabs} other browser tab(s) excluded: replay targets ONLY the first tab. "
-            "Record a new workflow for each tab instead."
+            f"{ignored_tabs} browser tab(s) had unrecordable actions or closed during capture."
+        )
+    if any("tab_index" in x for x in cleaned):
+        warnings.append(
+            "Tab positions and tab counts must match the recording; mismatches fail closed. "
+            "Review tab identities manually because ordinals do not prove page identity."
+        )
+    if any(x.get("frames") for x in cleaned):
+        warnings.append(
+            "Iframe selector chains must match the current DOM; cross-origin/frame changes may "
+            "prevent replay. Check each iframe target before execution."
         )
     return RecordingReview(deepcopy(cleaned), redacted, navigation_boundaries,
                            ignored_tabs, tuple(warnings))

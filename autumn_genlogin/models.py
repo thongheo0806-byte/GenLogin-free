@@ -115,6 +115,14 @@ def validated_steps(source: object) -> list[dict]:
             raise ValueError(f"Step {number}: unknown action")
         action = item["action"]
         allowed = {"action", *kinds[action]}
+        # Recorded DOM actions can target a precise tab slot and nested frame.
+        # Legacy steps without this context still target the first tab.
+        if "tab_index" in item or "tab_count" in item or "frames" in item:
+            if "selector" not in kinds[action]:
+                raise ValueError(f"Step {number}: tab/frame context requires a DOM selector")
+            allowed.update({"tab_index", "tab_count"})
+            if "frames" in item:
+                allowed.add("frames")
         if set(item) != allowed:
             raise ValueError(f"Step {number}: unexpected or missing fields")
         for key in kinds[action]:
@@ -128,6 +136,17 @@ def validated_steps(source: object) -> list[dict]:
                     raise ValueError(f"Step {number}: image confidence must be 0.90-1.00")
             elif not isinstance(value, str) or (not value and key != "text") or len(value) > 4096:
                 raise ValueError(f"Step {number}: invalid {key}")
+        if "tab_index" in item:
+            tab, count = item["tab_index"], item["tab_count"]
+            if (type(tab) is not int or type(count) is not int
+                    or not 1 <= count <= 12 or not 0 <= tab < count):
+                raise ValueError(f"Step {number}: invalid tab position or count")
+            frames = item.get("frames", [])
+            if (not isinstance(frames, list) or len(frames) > 4
+                    or any(not isinstance(sel, str) or not sel or len(sel) > 240
+                           or any(ord(ch) < 32 or ord(ch) == 127 for ch in sel)
+                           for sel in frames)):
+                raise ValueError(f"Step {number}: invalid iframe selector path")
         if action == "goto":
             valid_http_url(item["url"])
         if action == "click_image" and not re.fullmatch(r"[0-9a-f]{64}", item["template_id"]):
