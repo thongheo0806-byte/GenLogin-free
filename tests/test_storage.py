@@ -1,4 +1,5 @@
 import json
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -27,6 +28,27 @@ class StorageTests(unittest.TestCase):
         self.assertEqual(len(self.store.all()), 1)
         with self.assertRaises(KeyError):
             self.store.get(a.id)
+
+    def test_public_read_and_transaction_contexts_preserve_commit_rollback(self):
+        profile=self.store.save(Profile(name="Public API fixture"))
+        with self.store.read() as conn:
+            row=conn.execute("SELECT name FROM profiles WHERE id=?",
+                             (profile.id,)).fetchone()
+            self.assertEqual(row["name"],"Public API fixture")
+            with self.assertRaises(sqlite3.OperationalError):
+                conn.execute("UPDATE profiles SET name=? WHERE id=?",
+                             ("MUST_NOT_WRITE",profile.id))
+        self.assertEqual(self.store.get(profile.id).name,"Public API fixture")
+        with self.store.transaction() as conn:
+            conn.execute("UPDATE profiles SET name=? WHERE id=?",
+                         ("Committed name",profile.id))
+        self.assertEqual(self.store.get(profile.id).name,"Committed name")
+        with self.assertRaisesRegex(RuntimeError,"simulate rollback"):
+            with self.store.transaction() as conn:
+                conn.execute("UPDATE profiles SET name=? WHERE id=?",
+                             ("Rolled back",profile.id))
+                raise RuntimeError("simulate rollback")
+        self.assertEqual(self.store.get(profile.id).name,"Committed name")
 
     def test_metadata_export_sanitizes_sessions(self):
         p = self.store.save(Profile(name="Saved", proxy_scheme="http", proxy_host="example.com", proxy_port=8888, proxy_username="alice"))
