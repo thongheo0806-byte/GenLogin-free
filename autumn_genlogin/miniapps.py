@@ -98,7 +98,7 @@ class MiniAppRecord:
 class MiniAppLibrary:
     def __init__(self,store):
         self.store=store
-        with store._connect() as conn:
+        with store.transaction() as conn:
             conn.execute("""CREATE TABLE IF NOT EXISTS miniapps (
                 id TEXT PRIMARY KEY,
                 name TEXT NOT NULL,
@@ -136,7 +136,7 @@ class MiniAppLibrary:
         """User explicitly pins a 32-byte Ed25519 public key after review."""
         label=_field("publisher label",label,80)
         fingerprint=publisher_fingerprint(public_key)
-        with self.store._connect() as conn:
+        with self.store.transaction() as conn:
             conn.execute("BEGIN IMMEDIATE")
             row=conn.execute("SELECT public_key FROM miniapp_publishers WHERE fingerprint=?",
                              (fingerprint,)).fetchone()
@@ -150,7 +150,7 @@ class MiniAppLibrary:
         return fingerprint
 
     def list_publishers(self) -> list[dict]:
-        with self.store._connect() as conn:
+        with self.store.transaction() as conn:
             return [dict(row) for row in conn.execute(
                 "SELECT fingerprint,label,public_key FROM miniapp_publishers "
                 "ORDER BY label,fingerprint")]
@@ -158,7 +158,7 @@ class MiniAppLibrary:
     def untrust_publisher(self, fingerprint: str) -> None:
         if not isinstance(fingerprint,str) or not _IDENT.fullmatch(fingerprint):
             raise ValueError("Invalid publisher fingerprint")
-        with self.store._connect() as conn:
+        with self.store.transaction() as conn:
             result=conn.execute(
                 "DELETE FROM miniapp_publishers WHERE fingerprint=?",(fingerprint,))
             if result.rowcount!=1:
@@ -194,7 +194,7 @@ class MiniAppLibrary:
             raise ValueError("Miniapp manifest exceeds 64 KiB")
         ident=hashlib.sha256(raw.encode("utf-8")).hexdigest()
         now=datetime.now(timezone.utc).isoformat(timespec="seconds")
-        with self.store._connect() as conn:
+        with self.store.transaction() as conn:
             conn.execute("BEGIN IMMEDIATE")
             existing_signature=None
             pin=conn.execute(
@@ -254,7 +254,7 @@ class MiniAppLibrary:
     def _record(self, ident: str) -> MiniAppRecord:
         if not isinstance(ident,str) or not _IDENT.fullmatch(ident):
             raise ValueError("Invalid miniapp ID")
-        with self.store._connect() as conn:
+        with self.store.transaction() as conn:
             row=conn.execute("SELECT * FROM miniapps WHERE id=?",(ident,)).fetchone()
             if row is None:
                 raise KeyError("Miniapp not found")
@@ -288,7 +288,7 @@ class MiniAppLibrary:
 
     def list(self) -> list[MiniAppRecord]:
         # A bad local row is visible as invalid, but cannot hide healthy apps.
-        with self.store._connect() as conn:
+        with self.store.transaction() as conn:
             rows=conn.execute(
                 "SELECT id,installed_at_utc FROM miniapps ORDER BY name,version"
             ).fetchall()
@@ -311,7 +311,7 @@ class MiniAppLibrary:
         # Unsigned legacy drafts still require separate human UI review.
         if record.signature_status=="untrusted":
             raise ValueError("Signed Miniapp key is no longer locally trusted")
-        with self.store._connect() as conn:
+        with self.store.transaction() as conn:
             row=conn.execute("SELECT manifest FROM miniapps WHERE id=?",(record.id,)).fetchone()
         return validate_miniapp(json.loads(row["manifest"]))
 
@@ -319,7 +319,7 @@ class MiniAppLibrary:
         # Permit deliberate cleanup of corrupt entries without loading them.
         if not isinstance(ident,str) or not _IDENT.fullmatch(ident):
             raise ValueError("Invalid miniapp ID")
-        with self.store._connect() as conn:
+        with self.store.transaction() as conn:
             removed=conn.execute("DELETE FROM miniapps WHERE id=?",(ident,))
             if removed.rowcount!=1:
                 raise KeyError("Miniapp not found")
