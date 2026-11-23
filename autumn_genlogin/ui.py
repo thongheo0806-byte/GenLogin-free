@@ -1631,6 +1631,7 @@ class App:
         if failed is None:
             failed=lambda message: messagebox.showerror(title,message,parent=self.root)
         def worker():
+            completion=None
             try:
                 result=task()
             except Exception as exc:
@@ -1638,13 +1639,16 @@ class App:
                 # that could include page content or credentials.
                 message=(str(exc) if isinstance(exc,(ValueError,RuntimeError))
                          else type(exc).__name__)
-                self._ui_task_results.put((failed,message))
+                completion=(failed,message)
             else:
                 if finished is not None:
-                    self._ui_task_results.put((finished,result))
+                    completion=(finished,result)
             finally:
-                # Thread-local SQLite connections must not keep Windows DB files locked.
+                # Close thread-owned SQLite connections before reporting success
+                # so the GUI can safely clean up temporary Windows data dirs.
                 self.store.close_thread_connection()
+            if completion is not None:
+                self._ui_task_results.put(completion)
         threading.Thread(target=worker,daemon=True,name="autumn-ui-worker").start()
 
     def _copy(self, content):
