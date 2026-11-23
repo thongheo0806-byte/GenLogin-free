@@ -316,10 +316,15 @@ class SharedBrowserRealTests(unittest.TestCase):
               document.body.appendChild(frame);
             }""")
             await other.frame_locator("#nestedQa").locator("#inside").wait_for()
+            # Explicitly verify the listener on a dynamically attached frame.
+            await other.frame_locator("#nestedQa").locator("#inside").evaluate(
+                "(node) => { if (!window.__autumnRecordingInstalled) throw new Error('frame listener missing') }")
             await other.frame_locator("#nestedQa").locator("#inside").click()
         self.manager._submit(demonstrate()).result(timeout=35)
         self.assertTrue(eventually(
-            lambda:len(self.manager.recorded_steps(profile.id))>=5,timeout=15))
+            lambda:any(x["selector"]=="#inside" for x in
+                       self.manager.recorded_steps(profile.id)),timeout=15),
+            "Iframe click was not captured by the recorder")
         self.manager.stop_recording(profile.id)
         report=self.manager.recording_review(profile.id)
         self.assertFalse(report["still_recording"])
