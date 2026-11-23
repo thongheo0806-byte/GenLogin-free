@@ -30,7 +30,7 @@ class BatchJournal:
 
     def __init__(self, store):
         self.store = store
-        with store._connect() as conn:
+        with store.transaction() as conn:
             conn.execute("""CREATE TABLE IF NOT EXISTS batch_history (
                 id TEXT PRIMARY KEY,
                 snapshot_json TEXT NOT NULL,
@@ -77,7 +77,7 @@ class BatchJournal:
     def save(self, batch: dict) -> None:
         safe = self._sanitized(batch)
         payload = json.dumps(safe, separators=(",", ":"),ensure_ascii=True)
-        with self.store._connect() as conn:
+        with self.store.transaction() as conn:
             conn.execute("BEGIN IMMEDIATE")
             exists = conn.execute("SELECT 1 FROM batch_history WHERE id=?",
                                   (safe["id"],)).fetchone()
@@ -113,7 +113,7 @@ class BatchJournal:
         try:
             with ProfileLease(self.store.base,snapshot["id"]):
                 # Re-read after acquiring the lock, before mutating the row.
-                with self.store._connect() as conn:
+                with self.store.transaction() as conn:
                     conn.execute("BEGIN IMMEDIATE")
                     row = conn.execute("SELECT snapshot_json FROM batch_history WHERE id=?",
                                        (snapshot["id"],)).fetchone()
@@ -141,7 +141,7 @@ class BatchJournal:
 
     def get(self, batch_id: str) -> dict:
         ident=str(UUID(batch_id))
-        with self.store._connect() as conn:
+        with self.store.transaction() as conn:
             row=conn.execute("SELECT snapshot_json FROM batch_history WHERE id=?",(ident,)).fetchone()
         if row is None:
             raise KeyError("Batch not found")
@@ -156,7 +156,7 @@ class BatchJournal:
         """
         if type(limit) is not int or not 1 <= limit <= self.HISTORY_LIMIT:
             raise ValueError("History limit must be 1-100")
-        with self.store._connect(readonly=True) as conn:
+        with self.store.read() as conn:
             payloads=[row["snapshot_json"] for row in conn.execute(
                 "SELECT snapshot_json FROM batch_history ORDER BY rowid DESC LIMIT ?",
                 (limit,)).fetchall()]
