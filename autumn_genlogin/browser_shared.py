@@ -120,9 +120,12 @@ class SharedBrowserManager:
         self._started=threading.Event()
         self._start_error=None
         self._startup_lock=threading.Lock()
+        self._shutdown_requested=False
 
     def _ensure_loop(self):
         with self._startup_lock:
+            if self._shutdown_requested:
+                raise RuntimeError("Shared Playwright driver is shutting down")
             if self._thread is None:
                 self._thread=threading.Thread(target=self._thread_main,name="autumn-playwright-shared",daemon=True)
                 self._thread.start()
@@ -162,8 +165,17 @@ class SharedBrowserManager:
             loop.close()
 
     def _submit(self,coro):
-        self._ensure_loop()
-        return asyncio.run_coroutine_threadsafe(coro,self._loop)
+        try:
+            self._ensure_loop()
+            with self._startup_lock:
+                if self._shutdown_requested or not self._loop or not self._loop.is_running():
+                    raise RuntimeError("Shared Playwright driver is not running")
+                return asyncio.run_coroutine_threadsafe(coro,self._loop)
+        except BaseException:
+            # Do not leak "coroutine was never awaited" when shutdown races
+            # against a queued profile open/recorder/automation submission.
+            coro.close()
+            raise
 
     def active(self,pid:str)->bool:
         with self._lock:return pid in self._sessions
@@ -280,6 +292,13 @@ class SharedBrowserManager:
         """
         if self.count():
             raise RuntimeError("Close profiles before stopping driver")
+        with self._startup_lock:
+            if self._shutdown_requested:
+                # Repeated close is harmless after the driver thread exits.
+                if not self._thread or not self._thread.is_alive():
+                    return
+                raise RuntimeError("Shared Playwright driver shutdown is already active")
+            self._shutdown_requested = True
         loop = self._loop
         if loop and loop.is_running():
             async def finalize():
