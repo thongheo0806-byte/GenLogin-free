@@ -469,17 +469,11 @@ class App:
         if secret != check:
             messagebox.showerror("Encrypted backup","Passphrases do not match.",parent=self.root)
             return
-        def worker():
-            try:
-                count = export_encrypted_profile(self.store,pid,Path(target),secret)
-            except Exception as exc:
-                self.root.after(0,lambda msg=str(exc):messagebox.showerror(
-                    "Encrypted backup",msg,parent=self.root))
-            else:
-                self.root.after(0,lambda:self.notice(f"Encrypted profile backup saved ({count} files)"))
-            finally:
-                self.store.close_thread_connection()
-        threading.Thread(target=worker,daemon=True,name="autumn-backup-export").start()
+        self._run_ui_task(
+            lambda:export_encrypted_profile(self.store,pid,Path(target),secret),
+            lambda count:self.notice(f"Encrypted profile backup saved ({count} files)"),
+            title="Encrypted backup",
+        )
 
     def restore_profile(self):
         source = filedialog.askopenfilename(title="Restore encrypted profile backup",
@@ -496,42 +490,41 @@ class App:
                         "Enter the backup passphrase:", show="*",parent=self.root)
         if secret is None:
             return
-        def worker():
-            try:
-                profile = restore_encrypted_profile(self.store,Path(source),secret)
-            except Exception as exc:
-                self.root.after(0,lambda msg=str(exc):messagebox.showerror(
-                    "Restore backup",msg,parent=self.root))
-            else:
-                def done():
-                    self.refresh()
-                    self.notice("Restored encrypted profile: "+profile.name)
-                    messagebox.showinfo("Profile restored",
-                        "Restored a NEW profile. Reconfigure proxy passwords and "
-                        "review browser compatibility before launching it.",parent=self.root)
-                self.root.after(0,done)
-            finally:
-                self.store.close_thread_connection()
-        threading.Thread(target=worker,daemon=True,name="autumn-backup-restore").start()
+        def done(profile):
+            self.refresh()
+            self.notice("Restored encrypted profile: "+profile.name)
+            messagebox.showinfo("Profile restored",
+                "Restored a NEW profile. Reconfigure proxy passwords and "
+                "review browser compatibility before launching it.",
+                parent=self.root)
+        self._run_ui_task(
+            lambda:restore_encrypted_profile(self.store,Path(source),secret),
+            done,title="Restore backup",
+        )
 
     def export_profiles(self):
-        path = filedialog.asksaveasfilename(defaultextension=".json", filetypes=[("JSON", "*.json")], initialfile="autumn-profiles.json")
+        path=filedialog.asksaveasfilename(
+            defaultextension=".json",filetypes=[("JSON","*.json")],
+            initialfile="autumn-profiles.json")
         if path:
-            try:
-                number = self.store.export_metadata(Path(path))
-                self.notice(f"Exported {number} metadata records (no passwords/cookies)")
-            except Exception as exc:
-                messagebox.showerror("Export error", str(exc))
+            self._run_ui_task(
+                lambda:self.store.export_metadata(Path(path)),
+                lambda count:self.notice(
+                    f"Exported {count} metadata records (no passwords/cookies)"),
+                title="Export metadata",
+            )
 
     def import_profiles(self):
-        path = filedialog.askopenfilename(filetypes=[("JSON", "*.json")])
+        path=filedialog.askopenfilename(filetypes=[("JSON","*.json")])
         if path:
-            try:
-                number = self.store.import_metadata(Path(path))
+            def done(count):
                 self.refresh()
-                self.notice(f"Imported {number} profiles (fresh IDs and empty sessions)")
-            except Exception as exc:
-                messagebox.showerror("Import error", str(exc))
+                self.notice(
+                    f"Imported {count} profiles (fresh IDs and empty sessions)")
+            self._run_ui_task(
+                lambda:self.store.import_metadata(Path(path)),
+                done,title="Import metadata",
+            )
 
     def _sync_workflow_tabs(self, _event=None):
         # Switching back after invalid JSON emits a second Tk event: guard it
