@@ -27,9 +27,14 @@ by the desktop application and is **not enabled by any UI or API endpoint**.
    capabilities, no-new-privileges, a read-only filesystem and bounded
    process/memory/shm resources. `/tmp` is ephemeral. It is **not** given
    `AUTUMN_GENLOGIN_HOME`, tokens, cloud keys or browser session files.
-3. The Ollama service sees **only** an explicitly chosen offline model
-   directory. Never point that mount to an application or personal folder.
-   Its image must be explicitly chosen; no implicit version `latest`.
+3. The Ollama service sees **only** an explicitly chosen offline **models**
+   directory, mounted read-only at `/models` with `OLLAMA_MODELS=/models`.
+   Its own `/root/.ollama` key/state directory is a small, writable tmpfs
+   that disappears when the container exits. Do not point the bind mount to
+   an application, personal folder or a full credentials-bearing `~/.ollama`
+   tree. The image must be explicitly chosen; no implicit version `latest`.
+   A local `ollama list` healthcheck gates agent startup but does **not**
+   prove the requested model is present or functional.
 4. The agent creates a synthetic local page on `127.0.0.1` displaying a
    `Verify local fixture` button. Its task is fixed in audited Python.
    No arbitrary user prompt, external website, email, login or purchase.
@@ -57,7 +62,7 @@ Set the following *only* in your operator shell. No API keys:
 
 ```powershell
 $env:AUTUMN_LAB_OLLAMA_IMAGE = 'ollama/ollama:REVIEWED_EXACT_TAG'
-$env:AUTUMN_LAB_OLLAMA_MODELS = 'D:\\SAFE-LOCAL-MODEL-ONLY'
+$env:AUTUMN_LAB_OLLAMA_MODELS = 'D:\\SAFE-LOCAL-MODEL-WEIGHTS\\models'
 $env:AUTUMN_LAB_MODEL = 'your-already-installed-model:tag'
 docker compose -f experiments/browser_use_lab/compose.yaml config
 docker compose -f experiments/browser_use_lab/compose.yaml run --build --rm agent
@@ -66,8 +71,11 @@ docker compose -f experiments/browser_use_lab/compose.yaml run --build --rm agen
 The image tag and existing model name above are deliberately **not** fake
 working defaults. The operator must choose and verify them before executing.
 Do not enable automatic model pulls inside the runtime-isolated stack.
-Ensure the prepared Ollama model store works read-only and has the requested
-model; otherwise the experiment should fail safely.
+Ensure the pre-provisioned `models` folder contains `blobs/` and `manifests/`,
+is not writable from the container, and includes the requested model. The
+separate `/root/.ollama` tmpfs is ephemeral and must never contain secrets from
+the host. Model service readiness is checked before agent startup; no runtime
+inference has been verified in CI.
 
 ### Limitations and future acceptance
 
