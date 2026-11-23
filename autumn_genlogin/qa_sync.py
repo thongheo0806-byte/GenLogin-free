@@ -45,6 +45,25 @@ def local_origin(url: str) -> str:
     return f"http://127.0.0.1:{parts.port}"
 
 
+def same_qa_document(source_url: str, follower_url: str) -> bool:
+    """Compare ephemeral loopback page routes without storing or logging URLs.
+
+    Fragments are presentation-only; paths and query strings may change the
+    application state and MUST match before relaying a click. Never interpret
+    a matching host/port alone as matching page identity.
+    """
+    if source_url in {"about:blank", "about:srcdoc"}:
+        return source_url == follower_url
+    try:
+        if local_origin(source_url) != local_origin(follower_url):
+            return False
+        source, follower = urlsplit(source_url), urlsplit(follower_url)
+        return ((source.path or "/", source.query) ==
+                (follower.path or "/", follower.query))
+    except (TypeError, ValueError):
+        return False
+
+
 @dataclass
 class QASyncState:
     master_id: str
@@ -132,8 +151,9 @@ class LocalQASynchronizer:
         page,frame=source.get("page"),source.get("frame")
         if page is None or frame is None:
             return
+        source_url=page.url
         try:
-            if local_origin(page.url)!=state.origin:
+            if local_origin(source_url)!=state.origin:
                 return
         except (ValueError,TypeError):
             return
@@ -144,6 +164,7 @@ class LocalQASynchronizer:
         # This mirror is ONLY for local synthetic QA. Refuse external iframe
         # documents even if their parent browser tab is on the QA origin.
         chain=[]
+        frame_urls=[]
         cursor=frame
         try:
             while cursor is not page.main_frame:
@@ -158,6 +179,7 @@ class LocalQASynchronizer:
                 if not isinstance(css,str) or not css or len(css)>240:
                     return
                 chain.insert(0,css)
+                frame_urls.insert(0,child_url)
                 cursor=cursor.parent_frame
         except Exception:
             return
@@ -180,12 +202,20 @@ class LocalQASynchronizer:
                     continue
                 target=followers[tab_index]
                 try:
-                    if local_origin(target.url)!=state.origin:
-                        raise ValueError("Follower left the local QA origin")
+                    if not same_qa_document(source_url,target.url):
+                        raise ValueError("Follower QA page route differs from master")
                     scope=target
-                    for css in chain:
-                        if await scope.locator(css).count()!=1:
+                    for css,source_frame_url in zip(chain,frame_urls):
+                        frame_locator=scope.locator(css)
+                        if await frame_locator.count()!=1:
                             raise ValueError("QA iframe target is missing or ambiguous")
+                        element=await frame_locator.element_handle()
+                        follower_frame=(await element.content_frame()) if element else None
+                        if (follower_frame is None or
+                                not same_qa_document(source_frame_url,follower_frame.url) or
+                                (source_frame_url not in ("about:blank","about:srcdoc")
+                                 and local_origin(follower_frame.url)!=state.origin)):
+                            raise ValueError("Follower QA iframe document differs from master")
                         scope=scope.frame_locator(css)
                     await scope.locator(
                         f'button#{ident}[data-autumn-qa-click="1"]'
