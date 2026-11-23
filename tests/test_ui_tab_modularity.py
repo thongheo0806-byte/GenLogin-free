@@ -3,6 +3,7 @@ import inspect
 import unittest
 
 from autumn_genlogin.schedule_tab import ScheduleTabMixin
+from autumn_genlogin.batch_tab import BatchTabMixin
 from autumn_genlogin.ui import App
 
 
@@ -20,6 +21,20 @@ class ExtractedScheduleTabTests(unittest.TestCase):
                 self.assertIn(name,ScheduleTabMixin.__dict__)
                 self.assertNotIn(name,App.__dict__,
                                  "Scheduler callback must be owned by extracted tab")
+
+    def test_batch_tab_uses_app_bridge_and_owns_its_callbacks(self):
+        expected=("_build_batch_tab", "start_group_batch", "cancel_group_batch",
+                  "refresh_batches", "show_batch_details")
+        self.assertTrue(issubclass(App,BatchTabMixin))
+        for name in expected:
+            with self.subTest(handler=name):
+                self.assertIn(name,BatchTabMixin.__dict__)
+                self.assertNotIn(name,App.__dict__)
+        source=inspect.getsource(BatchTabMixin)
+        self.assertIn("self._run_ui_task",source)
+        self.assertNotIn("self.store._connect",source)
+        self.assertNotIn(".result(timeout=",source)
+        self.assertNotIn("asyncio.create_task(",source)
 
     def test_schedule_methods_only_depend_on_explicit_app_bridge(self):
         # This is a static architectural contract, not a UI test. The hosted
