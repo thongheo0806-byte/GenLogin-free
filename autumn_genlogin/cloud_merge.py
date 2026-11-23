@@ -74,21 +74,28 @@ def merge_cloud_documents(name: str, base: dict | None, local: dict,
         validate(local)
         if base is not None: validate(base)
         if remote is not None: validate(remote)
-    if remote == local:
-        return deepcopy(local), ()
-    if remote is None:
-        if base is None:
+    if name == "workflows":
+        if remote == local:
             return deepcopy(local), ()
-        return None, ("remote-document-removed",)
-    if base is None:
-        return None, ("no-shared-baseline",)
-    if remote == base:
-        return deepcopy(local), ()
-    if local == base:
-        return deepcopy(remote), ()
-    if name=="workflows":
+        if remote is None:
+            if base is None:
+                return deepcopy(local), ()
+            return None, ("remote-document-removed",)
+        if base is None:
+            return None, ("no-shared-baseline",)
+        if remote == base:
+            return deepcopy(local), ()
+        if local == base:
+            return deepcopy(remote), ()
         return None, ("workflow-diverged",)
-
+    # Profile metadata requires full merge even when two snapshots happen to
+    # be equal: an absent row must NOT delete a profile from the known base.
+    if remote is None:
+        return (deepcopy(local), ()) if base is None else (
+            None, ("remote-document-removed",))
+    if base is None:
+        return (deepcopy(local), ()) if remote == local else (
+            None, ("no-shared-baseline",))
     baseline, ours, theirs = _profiles(base), _profiles(local), _profiles(remote)
     merged = {}
     conflicts=[]
