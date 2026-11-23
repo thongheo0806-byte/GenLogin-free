@@ -51,8 +51,28 @@ def check_contract(document: dict) -> None:
     if not agent.get("user") or agent.get("user").startswith("0:"):
         raise ValueError("AI agent must not run as root")
     volumes = model.get("volumes", [])
-    if len(volumes) != 1 or not isinstance(volumes[0], dict) or volumes[0].get("read_only") is not True:
-        raise ValueError("Model weights must be a single read-only mount")
+    if (len(volumes) != 1 or not isinstance(volumes[0], dict)
+            or volumes[0].get("read_only") is not True
+            or volumes[0].get("target") != "/models"
+            or volumes[0].get("type") != "bind"):
+        raise ValueError("Model weights must be a single read-only /models bind mount")
+    if model.get("environment", {}).get("OLLAMA_MODELS") != "/models":
+        raise ValueError("Ollama must load offline model weights from /models")
+    tmpfs = model.get("tmpfs", [])
+    # Preserve a writable, ephemeral key/state directory while the root and
+    # model weights remain read-only. No host mount may contain Ollama keys.
+    if not any(
+        isinstance(item, str) and item.startswith("/root/.ollama:rw,")
+        for item in tmpfs
+    ):
+        raise ValueError("Ollama runtime state must use writable ephemeral tmpfs")
+    health = model.get("healthcheck", {})
+    if health.get("test") != ["CMD", "ollama", "list"]:
+        raise ValueError("Ollama needs an explicit local readiness healthcheck")
+    dependencies = agent.get("depends_on", {})
+    if (not isinstance(dependencies, dict)
+            or dependencies.get("ollama", {}).get("condition") != "service_healthy"):
+        raise ValueError("Agent must wait for healthy offline model service")
 
 
 if __name__ == "__main__":

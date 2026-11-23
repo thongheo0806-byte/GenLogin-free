@@ -13,6 +13,7 @@ def fixture():
                 "networks":["private-lab"],"read_only":True,
                 "cap_drop":["ALL"],"security_opt":["no-new-privileges:true"],
                 "user":"10001:10001","volumes":[],
+                "depends_on":{"ollama":{"condition":"service_healthy"}},
                 "environment":{
                     "ANONYMIZED_TELEMETRY":"false",
                     "BROWSER_USE_AUTO_LOGIN":"false",
@@ -22,8 +23,11 @@ def fixture():
             "ollama":{
                 "networks":["private-lab"],"read_only":True,
                 "cap_drop":["ALL"],"security_opt":["no-new-privileges:true"],
-                "volumes":[{"type":"bind","source":"/models",
-                            "target":"/root/.ollama","read_only":True}]
+                "environment":{"OLLAMA_MODELS":"/models"},
+                "tmpfs":["/root/.ollama:rw,nosuid,nodev,size=32m"],
+                "healthcheck":{"test":["CMD","ollama","list"]},
+                "volumes":[{"type":"bind","source":"/synthetic-models",
+                            "target":"/models","read_only":True}]
             }
         },
     }
