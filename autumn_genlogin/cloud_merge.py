@@ -138,3 +138,33 @@ def merge_cloud_documents(name: str, base: dict | None, local: dict,
     result={"format":PROFILE_FORMAT,"profiles":[merged[x] for x in sorted(merged)]}
     _profiles(result)  # merged row must still satisfy Profile constraints
     return result, ()
+
+
+def prepare_cloud_profile_pull(local: dict, remote: dict,
+                               base: dict | None = None
+                               ) -> tuple[dict | None, tuple[str, ...]]:
+    """Reconcile a remote pull without silently clobbering local edits.
+
+    A known baseline permits a strict three-way merge. At first pull there is
+    no shared ancestor: only disjoint additions and identical records can be
+    combined. Same-UUID divergent records are unverified conflicts, not a
+    reason to prefer the server or the local copy.
+    """
+    local_rows, remote_rows = _profiles(local), _profiles(remote)
+    if base is not None:
+        _profiles(base)
+        return merge_cloud_documents("profiles", base, local, remote)
+    merged = dict(local_rows)
+    conflicts = []
+    for ident, item in remote_rows.items():
+        existing = merged.get(ident)
+        if existing is not None and existing != item:
+            conflicts.append(ident + ":unverified-overlap")
+        else:
+            merged[ident] = item
+    if conflicts:
+        return None, tuple(sorted(conflicts))
+    result = {"format": PROFILE_FORMAT,
+              "profiles": [deepcopy(merged[x]) for x in sorted(merged)]}
+    _profiles(result)
+    return result, ()
