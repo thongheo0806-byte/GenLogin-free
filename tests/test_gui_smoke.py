@@ -147,5 +147,62 @@ class TkinterSmokeTests(unittest.TestCase):
                     os.environ["AUTUMN_GENLOGIN_HOME"]=previous
 
 
+    def test_window_close_shuts_down_playwright_off_tk_thread(self):
+        """Tk heartbeats continue until driver shutdown completes; close is once."""
+        import tkinter as tk
+        from autumn_genlogin.ui import App
+
+        with tempfile.TemporaryDirectory() as temp:
+            previous=os.environ.get("AUTUMN_GENLOGIN_HOME")
+            os.environ["AUTUMN_GENLOGIN_HOME"]=temp
+            root=tk.Tk()
+            root.withdraw()
+            entered=threading.Event()
+            release=threading.Event()
+            destroyed=threading.Event()
+            calls=[]
+            def close_driver():
+                calls.append("close")
+                entered.set()
+                self.assertTrue(release.wait(timeout=5), "Test did not release shutdown")
+            def pump(predicate, seconds=5):
+                deadline=time.monotonic()+seconds
+                while time.monotonic()<deadline:
+                    try:
+                        root.update()
+                    except tk.TclError:
+                        if predicate(): return True
+                        raise
+                    if predicate():return True
+                    time.sleep(0.01)
+                return False
+            try:
+                app=App(root)
+                root.bind("<Destroy>",
+                          lambda event:destroyed.set() if event.widget is root else None,
+                          add="+")
+                with patch.object(app.manager,"close_driver",side_effect=close_driver):
+                    app.on_quit()
+                    app.on_quit()
+                    self.assertTrue(pump(entered.is_set), "Shutdown worker never started")
+                    heartbeat=threading.Event()
+                    root.after(25,heartbeat.set)
+                    self.assertTrue(pump(heartbeat.is_set,seconds=1),
+                                    "Closing driver blocked the Tk event loop")
+                    self.assertFalse(destroyed.is_set())
+                    release.set()
+                    self.assertTrue(pump(destroyed.is_set),
+                                    "GUI did not destroy after driver closed")
+                    self.assertEqual(calls,["close"])
+            finally:
+                release.set()
+                if not destroyed.is_set():
+                    root.destroy()
+                if previous is None:
+                    os.environ.pop("AUTUMN_GENLOGIN_HOME",None)
+                else:
+                    os.environ["AUTUMN_GENLOGIN_HOME"]=previous
+
+
 if __name__ == "__main__":
     unittest.main()
