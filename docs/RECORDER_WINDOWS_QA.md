@@ -154,3 +154,20 @@ visual-target reliability, and exhaustive OpenAdapt task parity.
   cross-session semantic re-binding requires a separate explicit design,
   consent and regression tests. These additions do not establish full
   GenLogin/Titan/OpenAdapt recorder parity.
+
+## 2026-11-23 Win32 Cloud Pull interaction acceptance (development)
+
+- The Windows GUI smoke lane includes a test that navigates to the **Team
+  sync** pane and sends an actual OS mouse click using pywinauto to the
+  `Pull metadata` button. The client is a synthetic in-process fixture,
+  not a real remote account or public network request.
+- A same-UUID divergent remote profile must trigger a visible value-free
+  conflict warning; the original local name must remain unchanged and no
+  remote baseline can be accepted. A separate OS mouse click subsequently
+  imports a disjoint-UUID remote profile without modifying the local-only
+  profile. This exercises the Tk callback and SQLite reconciliation path.
+- The test explicitly verifies visible geometry before injecting input. If
+  hosted Windows cannot deliver the OS click, CI must fail rather than count
+  a mere method invocation as pointer acceptance.
+- This extends coverage but is not a complete Windows usability, DPI,
+  keyboard navigation, screen reader or real Team Hub integration audit.
