@@ -6,23 +6,35 @@ services:
     image: ${AUTUMN_LAB_OLLAMA_IMAGE:?Choose and review an exact Ollama image version}
     environment:
       OLLAMA_HOST: "0.0.0.0:11434"
+      OLLAMA_MODELS: "/models"
     read_only: true
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
     tmpfs:
       - /tmp:rw,nosuid,nodev,size=256m
+      # Ollama may generate a local server identity on startup. Keep it
+      # ephemeral; never mount credentials or user browser data.
+      - /root/.ollama:rw,nosuid,nodev,size=32m
     volumes:
-      # Mount only a pre-provisioned *model* directory. Never application data.
+      # Point to the PRE-PROVISIONED models directory, not all of ~/.ollama.
       - type: bind
-        source: ${AUTUMN_LAB_OLLAMA_MODELS:?Provide a local directory containing an offline Ollama model}
-        target: /root/.ollama
+        source: ${AUTUMN_LAB_OLLAMA_MODELS:?Provide a local directory containing pre-provisioned offline model weights}
+        target: /models
         read_only: true
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
     networks: [private-lab]
   agent:
     build:
       context: .
       dockerfile: Dockerfile
-    depends_on: [ollama]
+    depends_on:
+      ollama:
+        condition: service_healthy
     environment:
       AUTUMN_AI_LAB_ISOLATED: "1"
       AUTUMN_LAB_MODEL: ${AUTUMN_LAB_MODEL:?Choose a model already provisioned locally}
