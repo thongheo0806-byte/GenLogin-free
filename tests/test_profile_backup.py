@@ -103,7 +103,7 @@ class EncryptedProfileBackupTests(unittest.TestCase):
         original=self.destination.read_bytes()
         offset=len(MAGIC_V2)
         self.assertEqual(original[offset:offset+3], KDF_PARAMS_V2)
-        for replacement in (b"\\x0e\\x08\\x01", b"\\xff\\x08\\x01"):
+        for replacement in (bytes((14, 8, 1)), bytes((255, 8, 1))):
             with self.subTest(replacement=replacement):
                 altered=bytearray(original)
                 altered[offset:offset+3]=replacement
