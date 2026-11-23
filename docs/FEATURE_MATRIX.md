@@ -1,5 +1,16 @@
 # GenLogin feature matrix / AutumnGenLogin acceptance evidence
 
+> **Historical snapshot (2026-11-19), not a current feature status.** This
+> matrix preserves the original audit-era entries for traceability. Subsequent
+> PRs implemented limited OpenCV image click, tab/iframe Recorder, localhost
+> QA click mirroring, versioned encrypted backup, cloud three-way Push and
+> conflict-safe Pull, Windows GUI pointer tests, and async-owned profile
+> leases. Some cells below therefore say "not implemented" even though
+> bounded development subsets are now present. See the
+> [2026-11-23 refreshed assessment](GENLOGIN_TITAN_ASSESSMENT.md) for the
+> current capability-by-capability evidence and unverified gaps. **Neither
+> source establishes GenLogin/Titan equivalence or permits EXE release.**
+
 **Updated 2026-11-19.** Audited development baseline: v0.5 commit cc74b0cc45a8, plus security PR #5 and scheduler-retry work currently in review. There is no inspected GenLogin/Titan executable for a true same-version runtime comparison.
 
 The [official public release notes](https://genlogin.com/release-notes) currently list GenLogin **4.5.1 (06/08/2026)**. This is a published listing, not a verified installer, license authorization or binary SHA-256.
