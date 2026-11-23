@@ -81,4 +81,6 @@ jobs:
         run: |
           docker rm --force autumn-ollama-provision 2>/dev/null || true
           docker compose -f experiments/browser_use_lab/compose.yaml down --volumes --remove-orphans 2>/dev/null || true
-          rm -rf "$RUNNER_TEMP/autumn-model-only"
+          # Model files are written as container root during bootstrap.
+          # The workspace is a fixed disposable GitHub-hosted runner path.
+          sudo rm -rf -- "$RUNNER_TEMP/autumn-model-only"
