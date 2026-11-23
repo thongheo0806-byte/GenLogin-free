@@ -148,9 +148,20 @@ class BatchJournal:
         return deepcopy(self._recover(json.loads(row["snapshot_json"])))
 
     def list(self, limit: int = 20) -> list[dict]:
+        """One read-only snapshot; lease-check only batches still running.
+
+        Terminal batch results can never require a recovery OS lock. Running
+        snapshots are rechecked under their per-batch lease by _recover(),
+        preserving the existing no-replay/uncertain-after-crash contract.
+        """
         if type(limit) is not int or not 1 <= limit <= self.HISTORY_LIMIT:
             raise ValueError("History limit must be 1-100")
-        with self.store._connect() as conn:
-            keys=[row["id"] for row in conn.execute(
-                "SELECT id FROM batch_history ORDER BY rowid DESC LIMIT ?",(limit,)).fetchall()]
-        return [self.get(ident) for ident in keys]
+        with self.store._connect(readonly=True) as conn:
+            payloads=[row["snapshot_json"] for row in conn.execute(
+                "SELECT snapshot_json FROM batch_history ORDER BY rowid DESC LIMIT ?",
+                (limit,)).fetchall()]
+        return [
+            deepcopy(self._recover(snapshot)) if snapshot["status"] == "running"
+            else deepcopy(snapshot)
+            for snapshot in (json.loads(payload) for payload in payloads)
+        ]
