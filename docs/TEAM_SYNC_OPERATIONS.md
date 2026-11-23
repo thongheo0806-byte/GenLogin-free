@@ -61,3 +61,28 @@ Only services that issued those sessions can revoke them. See
   its server-side documents. Legacy archives from before the uploader-tracking
   migration display an unknown uploader. Tombstoning does not remove already
   downloaded copies or invalidate third-party sessions.
+
+## 2026-11-23 revision conflict reconciliation (development)
+
+- A local GUI push now reads the current team document revision **before** the
+  update. It uses an approved prior pull as its per-server/team/document
+  baseline. Unknown existing remote documents cannot be overwritten blindly.
+- Profile metadata supports a bounded per-field three-way merge of the
+  previous approved version, local allowed metadata and current remote allowed
+  metadata. Concurrent edits to different fields can merge only after an
+  explicit preview confirmation. Concurrent edits to the **same** field are
+  reported as structural conflicts without including values in error messages.
+  Profile absence never silently deletes local browser profiles.
+- Graph/sequential workflows are atomic documents. Divergent edits on both
+  sides are **not** merged automatically; the operator must inspect and
+  resolve them manually.
+- The encrypted hub retains its server-side compare-and-swap revision check.
+  A race between preview and upload returns HTTP 409, never an automatic
+  retry or an overwrite. Successful three-way uploads clear the GUI baseline;
+  a fresh approved pull is required before another update so remote-only
+  changes are not silently reverted by stale local metadata.
+- The GUI `_cloud_action` now dispatches worker results via its Tk polling
+  queue instead of invoking Tk functions from network threads.
+- This remains opt-in **metadata sync**, not live cookies, browser session
+  synchronization, conflict-free replicated data types, or automatic
+  disaster recovery.

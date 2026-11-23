@@ -145,6 +145,9 @@ class App:
         self.miniapps = MiniAppLibrary(self.store)
         self.cloud = None
         self.cloud_revision = {"profiles": 0, "workflows": 0}
+        # In-memory known remote snapshots scoped by server/team/document.
+        # Unknown remote revisions are never overwritten without a pull.
+        self.cloud_bases = {}
         self.extensions = self.manager.extensions
         self.api = LocalAPI(self.store, self.manager, self.schedule_store, self.batches)
         self.root.title("AutumnGenLogin  |  Local Browser Studio")
@@ -1194,13 +1197,15 @@ class App:
         ttk.Label(frame,text="Remote team roles: owner, admin, editor, viewer. Push uses revision checks to reject conflicts.",style="Muted.TLabel").pack(anchor="w",pady=8)
 
     def _cloud_action(self,fn,finished=None):
-        def worker():
-            try: result=fn()
-            except Exception as exc:
-                self.root.after(0,lambda error=str(exc):messagebox.showerror("Team sync",error,parent=self.root))
-            else:
-                self.root.after(0,lambda:finished(result) if finished else self.cloud_status.set("Success"))
-        threading.Thread(target=worker,daemon=True).start()
+        # Tk widgets and after() must never be touched from a network worker.
+        # Reuse the queue drained exclusively on the GUI main thread.
+        self._run_ui_task(
+            fn,
+            finished or (lambda _:self.cloud_status.set("Success")),
+            title="Team sync",
+            failed=lambda message:messagebox.showerror(
+                "Team sync",message,parent=self.root),
+        )
 
     def cloud_upload_session(self):
         # Preassign an ID so a failed upload can be resumed after restart.
@@ -1402,23 +1407,100 @@ class App:
                            lambda _:self.cloud_status.set(f"Added {username} as {role}"))
 
     def cloud_sync(self,name,direction):
-        if not self.cloud:return messagebox.showinfo("Team sync","Log in first",parent=self.root)
+        from copy import deepcopy
+        from .cloud_merge import merge_cloud_documents
+        if not self.cloud:
+            return messagebox.showinfo("Team sync","Log in first",parent=self.root)
+        client=self.cloud
         team_id=self.cloud_fields["team_id"].get().strip()
         passphrase=self.cloud_fields["passphrase"].get()
-        if len(passphrase)<12:return messagebox.showerror("Sync","Use a passphrase of at least 12 characters",parent=self.root)
+        if len(passphrase)<12:
+            return messagebox.showerror("Sync","Use a passphrase of at least 12 characters",parent=self.root)
+        scope=(client.url,team_id,name)
         if direction=="push":
-            try:doc=safe_profile_metadata(self.store) if name=="profiles" else {"format":"AutumnGenLogin/workflow-1","workflow":self.current_steps()}
-            except Exception as exc:return messagebox.showerror("Sync",str(exc),parent=self.root)
-            if not messagebox.askyesno("Encrypted sync",f"Upload encrypted {name} metadata to the selected team?",parent=self.root):return
-            def task():return self.cloud.push(team_id,name,self.cloud_revision[name],doc,passphrase)
-            def done(rev):self.cloud_revision[name]=rev;self.cloud_status.set(f"Uploaded {name} revision {rev}")
-            self._cloud_action(task,done)
+            try:
+                doc=(safe_profile_metadata(self.store) if name=="profiles"
+                     else {"format":"AutumnGenLogin/workflow-1",
+                           "workflow":self.current_steps()})
+            except Exception as exc:
+                return messagebox.showerror("Sync",type(exc).__name__,parent=self.root)
+            if not messagebox.askyesno(
+                "Encrypted sync","Review the local document before upload. "
+                "Server changes will be checked and never silently overwritten. Continue?",
+                parent=self.root
+            ):
+                return
+            baseline=self.cloud_bases.get(scope)
+            expected_rev,base_doc=(baseline if baseline else (None,None))
+            def inspect():
+                remote_rev,remote_doc=client.pull(team_id,name,passphrase)
+                if expected_rev is not None and (
+                    remote_rev < expected_rev or
+                    (remote_rev==expected_rev and remote_doc!=base_doc)
+                ):
+                    return {"conflicts":("remote-revision-regressed",)}
+                merged,conflicts=merge_cloud_documents(
+                    name,base_doc,doc,remote_doc)
+                if conflicts:
+                    return {"conflicts":conflicts}
+                return {"revision":remote_rev,"remote":remote_doc,
+                        "merged":merged,
+                        "needs_review":remote_doc is not None and
+                                        remote_doc!=base_doc}
+            def inspected(state):
+                if state.get("conflicts"):
+                    self.cloud_status.set("Conflict: no upload; review remote document first")
+                    messagebox.showwarning(
+                        "Cloud revision conflict",
+                        f"Upload blocked: {len(state['conflicts'])} conflicting location(s). "
+                        "Pull and inspect the remote revision before resolving; "
+                        "no data was overwritten.",
+                        parent=self.root)
+                    return
+                merged=state["merged"]
+                if state["remote"]==merged:
+                    self.cloud_status.set(
+                        "Remote revision already contains the proposed document. "
+                        "Pull to update local data.")
+                    return
+                if state["needs_review"] and not messagebox.askyesno(
+                    "Review three-way merge",
+                    "The server changed since your last approved pull. "
+                    "A structural three-way merge found no overlapping conflicts. "
+                    "Upload the merged metadata now? "
+                    "Afterward, pull the merged result to update your local copy.",
+                    parent=self.root
+                ):
+                    self.cloud_status.set("Merge cancelled: nothing uploaded")
+                    return
+                def submit():
+                    # Server-side optimistic CAS protects against another
+                    # writer racing between preview and this upload.
+                    return client.push(team_id,name,state["revision"],merged,passphrase)
+                def submitted(revision):
+                    if state["needs_review"]:
+                        self.cloud_bases.pop(scope,None)
+                        self.cloud_status.set(
+                            f"Merge uploaded at revision {revision}. Pull before next push.")
+                    else:
+                        self.cloud_bases[scope]=(revision,deepcopy(merged))
+                        self.cloud_status.set(f"Uploaded {name} revision {revision}")
+                self._cloud_action(submit,submitted)
+            self._cloud_action(inspect,inspected)
         else:
-            def task():return self.cloud.pull(team_id,name,passphrase)
+            def task():
+                return client.pull(team_id,name,passphrase)
             def done(value):
                 revision,doc=value
-                if not doc:return self.cloud_status.set("No remote document")
-                if not messagebox.askyesno("Cloud preview",f"Import encrypted {name} revision {revision} from this team into local data?",parent=self.root):return
+                if not doc:
+                    return self.cloud_status.set("No remote document")
+                if not messagebox.askyesno(
+                    "Cloud preview",
+                    f"Import encrypted {name} revision {revision} into local data? "
+                    "This establishes a baseline for future conflict detection.",
+                    parent=self.root
+                ):
+                    return
                 try:
                     if name=="profiles":
                         from .team_sync import merge_safe_profiles
@@ -1426,13 +1508,20 @@ class App:
                         self.refresh()
                         self.cloud_status.set(f"Merged {count} profile metadata rows")
                     else:
-                        if doc.get("format")!="AutumnGenLogin/workflow-1":raise ValueError("Wrong workflow format")
+                        if doc.get("format")!="AutumnGenLogin/workflow-1":
+                            raise ValueError("Wrong workflow format")
                         flow=doc["workflow"]
-                        if isinstance(flow,dict):self.graph_builder.set_graph(flow);self.flow_tabs.select(2)
-                        else:self.builder.set_steps(validated_steps(flow));self.flow_tabs.select(0)
+                        if isinstance(flow,dict):
+                            self.graph_builder.set_graph(flow)
+                            self.flow_tabs.select(2)
+                        else:
+                            self.builder.set_steps(validated_steps(flow))
+                            self.flow_tabs.select(0)
                         self.cloud_status.set("Downloaded workflow")
+                    self.cloud_bases[scope]=(revision,deepcopy(doc))
                     self.cloud_revision[name]=revision
-                except Exception as exc:messagebox.showerror("Team sync",str(exc),parent=self.root)
+                except Exception as exc:
+                    messagebox.showerror("Team sync",type(exc).__name__,parent=self.root)
             self._cloud_action(task,done)
 
     def refresh_extensions(self):
