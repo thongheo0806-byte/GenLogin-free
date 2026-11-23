@@ -226,7 +226,8 @@ class SharedBrowserRealTests(unittest.TestCase):
         self.assertTrue(eventually(lambda:self.manager._submit(
             all_followers_clicked()).result(timeout=8),timeout=20),
             "Master click did not propagate to both independent QA profiles")
-        self.assertEqual(mirror.status()["mirrored_clicks"],2)
+        self.assertEqual(mirror.status()["mirrored_clicks"],1)
+        self.assertEqual(mirror.status()["delivered_clicks"],2)
         mirror.stop()
         self.assertFalse(mirror.status()["active"])
         async def reset_followers():
