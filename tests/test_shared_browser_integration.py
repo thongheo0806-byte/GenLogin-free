@@ -291,6 +291,67 @@ class SharedBrowserRealTests(unittest.TestCase):
                         "Cancelling workflow must not close manually opened browser")
         self.manager.stop(profile.id)
 
+    def test_local_qa_mirror_counts_master_gestures_across_frames(self):
+        from autumn_genlogin.qa_sync import LocalQASynchronizer, QA_CLICK_SCRIPT
+
+        profiles=[self.store.save(Profile(name=f"QA browser {i}",
+                       browser="chromium",start_url=self.origin)) for i in range(3)]
+        for profile in profiles:
+            self.manager.start(profile.id)
+        self.assertTrue(eventually(
+            lambda:all((session:=self.manager._sessions.get(p.id))
+                       is not None and session.ready.is_set()
+                       for p in profiles),timeout=25))
+        mirror=LocalQASynchronizer(self.manager)
+        master=profiles[0].id
+        mirror.start(master,[p.id for p in profiles[1:]])
+
+        async def click_master():
+            page=self.manager._sessions[master].context.pages[0]
+            await page.locator("#press").click()
+        self.manager._submit(click_master()).result(timeout=15)
+        self.assertTrue(eventually(lambda:mirror.status().get("delivered_clicks")==2,
+                                   timeout=15))
+        state=mirror.status()
+        self.assertEqual(state["mirrored_clicks"],1)
+        self.assertEqual(state["delivered_clicks"],2)
+        self.assertEqual(state["failed_clicks"],0)
+
+        async def create_matching_frames():
+            for p in profiles:
+                page=self.manager._sessions[p.id].context.pages[0]
+                await page.evaluate("""() => {
+                  const frame=document.createElement('iframe');
+                  frame.id='qaFrame';
+                  frame.srcdoc='<button id="qaTap" data-autumn-qa-click="1">QA</button>';
+                  document.body.appendChild(frame);
+                }""")
+                loc=page.frame_locator("#qaFrame").locator("#qaTap")
+                await loc.wait_for()
+                await loc.evaluate(
+                    "(el) => { el.onclick = () => { document.body.dataset.hit = 'yes' } }")
+            page=self.manager._sessions[master].context.pages[0]
+            frame=page.frame_locator("#qaFrame").locator("#qaTap")
+            await page.frames[-1].evaluate(QA_CLICK_SCRIPT)
+            await frame.click()
+        self.manager._submit(create_matching_frames()).result(timeout=30)
+        self.assertTrue(eventually(lambda:mirror.status().get("delivered_clicks")==4,
+                                   timeout=15))
+        state=mirror.status()
+        self.assertEqual(state["mirrored_clicks"],2,
+                         "Two master gestures should not count as 4 clicks")
+        self.assertEqual(state["delivered_clicks"],4)
+        self.assertEqual(state["failed_clicks"],0)
+        async def follower_frame_state():
+            return [
+                await self.manager._sessions[p.id].context.pages[0].frame_locator(
+                    "#qaFrame").locator("body").get_attribute("data-hit")
+                for p in profiles[1:]
+            ]
+        self.assertEqual(self.manager._submit(follower_frame_state()).result(timeout=15),
+                         ["yes","yes"])
+        mirror.stop()
+
     def test_recorder_captures_tabs_and_iframes_and_replays_fail_closed(self):
         """Real Chromium: replay uses recorded tab/frame, never page zero by accident."""
         profile=self.store.save(Profile(
