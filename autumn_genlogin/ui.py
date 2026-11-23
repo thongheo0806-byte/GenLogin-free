@@ -1381,6 +1381,9 @@ class App:
         def done(client):
             self.cloud=client
             self.cloud_revision={"profiles":0,"workflows":0}
+            # A new sign-in is not proof the same principal owns old baselines.
+            # Require a newly approved pull before any subsequent merge.
+            self.cloud_bases.clear()
             self.cloud_fields["password"].set("")
             self.cloud_status.set("Authenticated · token kept in memory")
         self._cloud_action(task,done)
@@ -1488,19 +1491,60 @@ class App:
                 revision,doc=value
                 if not doc:
                     return self.cloud_status.set("No remote document")
+                expected_local=None
+                pending=None
+                if name=="profiles":
+                    from .cloud_merge import prepare_cloud_profile_pull
+                    try:
+                        # Use the last accepted remote snapshot, not a
+                        # possibly edited local copy, as common ancestor.
+                        prior=self.cloud_bases.get(scope)
+                        if prior is not None and (revision<prior[0] or
+                                (revision==prior[0] and doc!=prior[1])):
+                            raise ValueError("Remote revision regressed or mutated")
+                        expected_local=safe_profile_metadata(self.store)
+                        merged,conflicts=prepare_cloud_profile_pull(
+                            expected_local,doc,prior[1] if prior else None)
+                    except Exception as exc:
+                        return messagebox.showerror(
+                            "Cloud pull",type(exc).__name__,parent=self.root)
+                    if conflicts:
+                        self.cloud_status.set(
+                            f"Pull blocked: {len(conflicts)} local/remote metadata conflict(s)")
+                        return messagebox.showwarning(
+                            "Cloud pull needs conflict resolution",
+                            f"Found {len(conflicts)} overlapping or unverified field(s). "
+                            "No local profiles were modified. Review and reconcile "
+                            "the same profile ID on both sides before retrying.",
+                            parent=self.root)
+                    before={item["id"]:item for item in expected_local["profiles"]}
+                    # Upload is forbidden for profiles which happen to exist
+                    # locally but have no remote counterpart. Only changed
+                    # records are written; active unchanged profiles stay open.
+                    changes=[item for item in merged["profiles"]
+                             if before.get(item["id"])!=item]
+                    pending={"format":merged["format"],"profiles":changes}
+                    summary=(f"Apply {len(changes)} new/updated safe profile metadata "
+                             "record(s)? Local-only records and proxy/vault "
+                             "credentials will be preserved. "
+                             "Conflicting local edits were not overwritten.")
+                else:
+                    summary=(f"Import encrypted {name} revision {revision} into local data? "
+                             "This establishes a baseline for future conflict detection.")
                 if not messagebox.askyesno(
-                    "Cloud preview",
-                    f"Import encrypted {name} revision {revision} into local data? "
-                    "This establishes a baseline for future conflict detection.",
-                    parent=self.root
+                    "Cloud preview",summary,parent=self.root
                 ):
                     return
                 try:
                     if name=="profiles":
                         from .team_sync import merge_safe_profiles
-                        count=merge_safe_profiles(self.store,doc,active=self.manager.active)
+                        count=merge_safe_profiles(
+                            self.store,pending,active=self.manager.active,
+                            expected_local=expected_local)
                         self.refresh()
-                        self.cloud_status.set(f"Merged {count} profile metadata rows")
+                        self.cloud_status.set(
+                            f"Reconciled {count} changed profile metadata rows; "
+                            "local-only profiles preserved")
                     else:
                         if doc.get("format")!="AutumnGenLogin/workflow-1":
                             raise ValueError("Wrong workflow format")
@@ -1512,9 +1556,12 @@ class App:
                             self.builder.set_steps(validated_steps(flow))
                             self.flow_tabs.select(0)
                         self.cloud_status.set("Downloaded workflow")
+                    # Record the remotely committed snapshot, NOT the merged
+                    # local view: future pushes can still reconcile local edits.
                     self.cloud_bases[scope]=(revision,deepcopy(doc))
                     self.cloud_revision[name]=revision
                 except Exception as exc:
+                    self.cloud_status.set("Pull failed: no baseline was updated")
                     messagebox.showerror("Team sync",type(exc).__name__,parent=self.root)
             self._cloud_action(task,done)
 
