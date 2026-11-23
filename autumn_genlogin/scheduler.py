@@ -81,6 +81,17 @@ class ScheduleStore:
         if isinstance(workflow, list): return validated_steps(workflow)
         return validate_graph(workflow)
 
+    @staticmethod
+    def _stored_workflow(raw: str) -> dict | list:
+        """Decode persisted jobs without exposing potentially sensitive source."""
+        try:
+            workflow = json.loads(raw)
+        except (ValueError, TypeError) as exc:
+            raise ValueError("InvalidStoredWorkflow") from exc
+        if not isinstance(workflow, (dict, list)):
+            raise ValueError("InvalidStoredWorkflow")
+        return workflow
+
     def add(self, profile_id: str, workflow: dict | list, next_run: datetime,
             interval_seconds: int | None = None) -> str:
         pid = str(UUID(profile_id))
@@ -95,11 +106,26 @@ class ScheduleStore:
         return job_id
 
     def list(self) -> list[Job]:
+        """A damaged persisted workflow must not take down GUI or the API."""
+        jobs = []
         with self.store._connect() as c:
             rows = c.execute("SELECT * FROM schedules ORDER BY next_run_utc").fetchall()
-        return [Job(id=r["id"], profile_id=r["profile_id"],workflow=json.loads(r["workflow_json"]),
-                    next_run_utc=r["next_run_utc"],interval_seconds=r["interval_seconds"],enabled=bool(r["enabled"]),
-                    last_status=r["last_status"],last_error=r["last_error"]) for r in rows]
+            for r in rows:
+                try:
+                    workflow = self._stored_workflow(r["workflow_json"])
+                    enabled, status, error = bool(r["enabled"]), r["last_status"], r["last_error"]
+                except ValueError:
+                    workflow, enabled, status, error = [], False, "error", "InvalidStoredWorkflow"
+                    # Compare raw data to avoid quarantining a concurrently edited job.
+                    c.execute(
+                        "UPDATE schedules SET enabled=0,last_status='error',last_error=? "
+                        "WHERE id=? AND workflow_json=?",
+                        (error, r["id"], r["workflow_json"]),
+                    )
+                jobs.append(Job(id=r["id"], profile_id=r["profile_id"], workflow=workflow,
+                                next_run_utc=r["next_run_utc"], interval_seconds=r["interval_seconds"],
+                                enabled=enabled, last_status=status, last_error=error))
+        return jobs
 
     def remove(self, job_id: str) -> None:
         jid = str(UUID(job_id))
@@ -129,12 +155,25 @@ class ScheduleStore:
             rows = c.execute("SELECT * FROM schedules WHERE enabled=1 AND next_run_utc<=? ORDER BY next_run_utc LIMIT ?",
                              (now_s, limit)).fetchall()
             for r in rows:
-                interval = r["interval_seconds"]
-                if interval:
-                    previous = datetime.fromisoformat(r["next_run_utc"])
-                    # Skip missed intervals instead of backfilling thousands of jobs.
-                    skips = max(1, int((now-previous).total_seconds()//interval)+1)
-                    next_time = iso(previous + timedelta(seconds=skips*interval))
+                # Validate every stored row before making a dispatch record.
+                # One corrupt row must never block healthy due jobs behind it.
+                try:
+                    workflow = self._stored_workflow(r["workflow_json"])
+                    interval = r["interval_seconds"]
+                    next_time = None
+                    if interval:
+                        if type(interval) is not int or interval < 60:
+                            raise ValueError("InvalidStoredInterval")
+                        previous = datetime.fromisoformat(r["next_run_utc"])
+                        # Skip missed intervals instead of replaying old actions.
+                        skips = max(1, int((now-previous).total_seconds()//interval)+1)
+                        next_time = iso(previous + timedelta(seconds=skips*interval))
+                except (ValueError, TypeError, OverflowError):
+                    c.execute(
+                        "UPDATE schedules SET enabled=0,last_status='error', "
+                        "last_error='InvalidStoredWorkflow' WHERE id=?", (r["id"],))
+                    continue
+                if next_time is not None:
                     c.execute("UPDATE schedules SET next_run_utc=?,last_status='dispatch_pending',last_error='' WHERE id=?",
                               (next_time,r["id"]))
                 else:
@@ -142,7 +181,7 @@ class ScheduleStore:
                 dispatch_id = str(uuid4())
                 c.execute("INSERT INTO schedule_runs(id,job_id,profile_id,started_utc,status) VALUES(?,?,?,?,?)",
                           (dispatch_id,r["id"],r["profile_id"],now_s,"dispatch_pending"))
-                claimed.append(Job(id=r["id"],profile_id=r["profile_id"],workflow=json.loads(r["workflow_json"]),
+                claimed.append(Job(id=r["id"],profile_id=r["profile_id"],workflow=workflow,
                                    next_run_utc=r["next_run_utc"],interval_seconds=interval,
                                    enabled=bool(interval),last_status="dispatch_pending",last_error="",
                                    dispatch_id=dispatch_id))
@@ -269,9 +308,9 @@ class Scheduler:
                             self.store.record_error(job.id, type(exc).__name__, job.dispatch_id)
                         else:
                             self.store.record_dispatched(job.id, job.dispatch_id)
-                except sqlite3.Error:
-                    # A locked or temporarily unavailable database must not kill
-                    # the scheduler thread; the GUI diagnostics remains available.
+                except (sqlite3.Error, ValueError, TypeError, OverflowError):
+                    # Unexpected storage errors may be transient. Never kill the
+                    # worker or auto-replay a previously claimed browser action.
                     pass
                 self._stop.wait(self.interval)
         finally:
