@@ -6,6 +6,7 @@ unlinking while a process holds a lock could create two independent locks.
 from __future__ import annotations
 
 import os
+import threading
 from pathlib import Path
 from uuid import UUID
 
