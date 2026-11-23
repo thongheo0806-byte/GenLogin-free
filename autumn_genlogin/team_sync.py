@@ -511,15 +511,18 @@ class CloudClient:
         return self.request("PUT",f"/teams/{team_id}/documents/{name}",{"revision":revision,"blob":blob})["revision"]
 
 
-def merge_safe_profiles(store,document:dict,*,active=lambda _:False)->int:
-    """Apply explicitly allowed metadata without replacing local proxy/secret data.
+def merge_safe_profiles(store,document:dict,*,active=lambda _:False,
+                        expected_local:dict | None = None)->int:
+    """Transactionally apply reviewed cloud metadata without overwriting secrets.
 
-    Existing IDs are updated, new IDs are added, and records absent remotely
-    are NEVER deleted. Reject the whole update on validation errors.
+    A pull may pass expected_local to assert its preview is still current.
+    Check and apply under the SAME SQLite write transaction: local edits from
+    another GUI/API thread can never be silently lost between review and save.
     """
     from dataclasses import replace
     from uuid import UUID
     from .models import Profile
+    from .cloud_merge import _profiles
     keys={"id","name","group_name","tags","browser","start_url","locale","timezone_id",
           "viewport_width","viewport_height"}
     if not isinstance(document,dict) or document.get("format")!="AutumnGenLogin/profile-metadata-1":
@@ -527,20 +530,41 @@ def merge_safe_profiles(store,document:dict,*,active=lambda _:False)->int:
     records=document.get("profiles")
     if not isinstance(records,list) or len(records)>2000:
         raise ValueError("Invalid profiles list")
-    profiles=[]
+    normalized=[]
     seen=set()
     for record in records:
         if not isinstance(record,dict) or set(record)!=keys:
             raise ValueError("Profile metadata contains unexpected fields")
         pid=str(UUID(record["id"]))
-        if pid in seen:raise ValueError("Duplicate profile IDs")
+        if record["id"]!=pid or pid in seen:
+            raise ValueError("Duplicate or noncanonical profile IDs")
         seen.add(pid)
-        if active(pid):raise ValueError("Stop running profiles before importing metadata")
-        try: existing=store.get(pid)
-        except KeyError: existing=None
-        updated=replace(existing,**record) if existing else Profile(**record)
-        updated.validate()
-        profiles.append(updated)
+        normalized.append(record)
+    if expected_local is not None:
+        _profiles(expected_local)
     with store._connect() as conn:
-        for profile in profiles:store._save_with_connection(conn,profile)
+        conn.execute("BEGIN IMMEDIATE")
+        if expected_local is not None:
+            # Do not query Store.all() from a second connection. Comparing in
+            # the write transaction closes the edit-after-preview race.
+            current={"format":"AutumnGenLogin/profile-metadata-1",
+                     "profiles":[
+                         {k:getattr(p,k) for k in keys}
+                         for p in (Profile(**dict(row)) for row in
+                                   conn.execute("SELECT * FROM profiles"))
+                     ]}
+            if _profiles(current)!=_profiles(expected_local):
+                raise ValueError("Local profile metadata changed since cloud preview; review again")
+        profiles=[]
+        for record in normalized:
+            pid=record["id"]
+            if active(pid):
+                raise ValueError("Stop running profiles before importing metadata")
+            row=conn.execute("SELECT * FROM profiles WHERE id = ?",(pid,)).fetchone()
+            existing=Profile(**dict(row)) if row is not None else None
+            updated=replace(existing,**record) if existing else Profile(**record)
+            updated.validate()
+            profiles.append(updated)
+        for profile in profiles:
+            store._save_with_connection(conn,profile)
     return len(profiles)

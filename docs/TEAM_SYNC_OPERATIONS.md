@@ -86,3 +86,26 @@ Only services that issued those sessions can revoke them. See
 - This remains opt-in **metadata sync**, not live cookies, browser session
   synchronization, conflict-free replicated data types, or automatic
   disaster recovery.
+
+## 2026-11-23 fail-closed metadata Pull preview
+
+- The desktop **Pull metadata** path now checks local edits just as Push does.
+  With a trusted accepted baseline, it computes a three-way merge of local,
+  baseline and remote. Without any shared baseline it imports only disjoint
+  remote UUIDs or records already identical on both sides. Same-UUID
+  divergences are **blocked**, not resolved by assuming the server wins.
+- Existing local-only UUIDs are retained. Only genuinely new or changed
+  metadata records are applied. Proxy details, OS vault secrets and active
+  profile browser directories are never copied from the server.
+- The preview is checked again **under the SQLite write transaction** before
+  modification. A concurrent local edit during review triggers a rejection,
+  leaving metadata unchanged. Do not interpret the review as authorization to
+  overwrite later local changes.
+- An accepted baseline stores the actual remote snapshot, not the locally
+  merged snapshot. A subsequent Push can still reconcile independent edits.
+  Signing in again clears remembered baselines, since a new authentication is
+  not proof that the same account owns the old sync history.
+- There is no automatic conflict resolver or cross-device replay queue.
+  A conflict requires operator review and a new pull; previously downloaded
+  sessions are not touched. Workflows still require explicit document-level
+  review and are never merged field-by-field.
