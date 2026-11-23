@@ -72,3 +72,20 @@
 - Derivation parameters accepted by the reader are a strict allowlist, not arbitrary values from untrusted files. The implementation uses a 256 MiB scrypt memory cap. Stronger derivation consumes more memory and CPU, and does not replace a high-entropy unique backup passphrase.
 - Manual Team Hub handoff transfers either format as **opaque encrypted bytes**, without decrypting the original archive. Its 16 MiB transfer size cap and other development limitations remain.
 - The Team Hub document encryption scheme and account password hashes are separate formats; this update does **not** change their scrypt settings or claim comprehensive password-hardening across the application.
+
+## 2026-11-23 rebuildable browser cache exclusions
+
+- The opt-in encrypted profile exporter skips the known rebuildable Chromium
+  directories `Cache`, `Code Cache`, `GPUCache`, `GrShaderCache`,
+  `ShaderCache`, `DawnCache` and `GraphiteDawnCache`. It prunes them while
+  walking the tree, rather than scanning every disposable cache file and
+  counting it against the 12,000-file / 1 GiB backup limits.
+- Session-bearing paths such as `Cookies`, `Local Storage`, `IndexedDB`,
+  and `Service Worker/CacheStorage` remain included. Some offline browser
+  page caches are intentionally not preserved and will need rebuilding.
+- The export refuses unsafe links/reparse directories and unreadable trees
+  rather than silently following links or claiming a complete backup after
+  losing files. Excluded directories do not become a general-purpose
+  filesystem traversal permission.
+- A successful archive restore confirms the covered files were preserved,
+  not that every web app session works identically on another OS/browser.
