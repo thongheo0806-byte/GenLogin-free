@@ -145,6 +145,31 @@ class SharedBrowserManager:
         self._start_error=None
         self._startup_lock=threading.Lock()
         self._shutdown_requested=False
+        # asyncio keeps only weak references to fire-and-forget tasks.
+        # Keep page-close and stop-session coroutines alive until completion.
+        # Only the owning Playwright loop mutates this registry.
+        self._background_tasks: set[asyncio.Task] = set()
+
+    def _spawn_background(self, coro):
+        """Spawn a loop-owned task with a strong lifetime reference."""
+        task=asyncio.create_task(coro)
+        self._background_tasks.add(task)
+
+        def finished(done):
+            self._background_tasks.discard(done)
+            if not done.cancelled():
+                try:
+                    error=done.exception()
+                except Exception:
+                    error=None
+                if error is not None:
+                    # Never expose exception messages that could contain page
+                    # URLs, form text or other sensitive browser state.
+                    self.events.put(("system","error",
+                                     "Background browser operation failed: "+
+                                     type(error).__name__))
+        task.add_done_callback(finished)
+        return task
 
     def _ensure_loop(self):
         with self._startup_lock:
@@ -250,7 +275,7 @@ class SharedBrowserManager:
                 return
             context.on("close",lambda _:session.closed.set())
             def page_added(page):
-                page.on("close",lambda _:asyncio.create_task(self._on_page_closed(session)))
+                page.on("close",lambda _:self._spawn_background(self._on_page_closed(session)))
             context.on("page",page_added)
             for page in context.pages:page_added(page)
             page=context.pages[0] if context.pages else await context.new_page()
@@ -299,7 +324,7 @@ class SharedBrowserManager:
             session=self._sessions.get(pid)
             if session: session.cancel.set()
         if session and self._loop:
-            self._loop.call_soon_threadsafe(lambda:asyncio.create_task(self._stop_session(session)))
+            self._loop.call_soon_threadsafe(lambda:self._spawn_background(self._stop_session(session)))
 
     async def _stop_session(self,session:Session):
         if session.automation and session.automation is not asyncio.current_task() and not session.automation.done():session.automation.cancel()
