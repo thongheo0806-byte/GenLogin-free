@@ -202,5 +202,89 @@ class WindowsPywinautoSmokeTests(unittest.TestCase):
                     os.environ["AUTUMN_GENLOGIN_HOME"]=old
 
 
+    def test_win32_cloud_pull_conflict_button_refuses_local_overwrite(self):
+        """Genuine OS pointer clicks drive a value-free Cloud Pull warning."""
+        import tkinter as tk
+        from tkinter import ttk
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from pywinauto import mouse
+        from autumn_genlogin.ui import App
+        from autumn_genlogin.models import Profile
+        from autumn_genlogin.team_sync import safe_profile_metadata
+
+        def walk(widget):
+            yield widget
+            for child in widget.winfo_children():
+                yield from walk(child)
+
+        with tempfile.TemporaryDirectory() as home:
+            previous=os.environ.get("AUTUMN_GENLOGIN_HOME")
+            os.environ["AUTUMN_GENLOGIN_HOME"]=home
+            root=tk.Tk()
+            try:
+                app=App(root)
+                saved=app.store.save(Profile(name="Win32 local",group_name="QA"))
+                app.refresh()
+                document=safe_profile_metadata(app.store)
+                changed={"format":document["format"],"profiles":[
+                    {**document["profiles"][0],"name":"REMOTE_SHOULD_NOT_WIN"}
+                ]}
+                cloud=SimpleNamespace(
+                    url="http://127.0.0.1:8899",
+                    pull=lambda *_:(1,changed),
+                )
+                app.cloud=cloud
+                app.cloud_fields["team_id"].set("qa-team")
+                app.cloud_fields["passphrase"].set("synthetic shared passphrase")
+                notebook=next(w for w in walk(root)
+                              if isinstance(w,ttk.Notebook) and len(w.tabs())==9)
+                notebook.select(7)  # Team sync tab
+                root.update()
+                team_tab=root.nametowidget(notebook.tabs()[7])
+                button=next(w for w in walk(team_tab)
+                            if isinstance(w,ttk.Button)
+                            and w.cget("text")=="Pull metadata")
+                self.assertTrue(button.winfo_viewable())
+                self.assertGreater(button.winfo_width(),20)
+                warnings=[]
+                def immediate(fn,finished=None):
+                    result=fn()
+                    if finished is not None:finished(result)
+                def click():
+                    root.update()
+                    mouse.click(button="left",coords=(
+                        button.winfo_rootx()+button.winfo_width()//2,
+                        button.winfo_rooty()+button.winfo_height()//2))
+                    root.update()
+                with (patch.object(app,"_cloud_action",side_effect=immediate),
+                      patch("autumn_genlogin.ui.messagebox.showwarning",
+                            side_effect=lambda *args,**kwargs:warnings.append(args)),
+                      patch("autumn_genlogin.ui.messagebox.askyesno",
+                            side_effect=AssertionError("No overwrite approval on conflict"))):
+                    click()
+                self.assertTrue(warnings)
+                self.assertEqual(app.store.get(saved.id).name,"Win32 local")
+                self.assertFalse(app.cloud_bases)
+
+                remote=Profile(name="Win32 remote only",group_name="QA")
+                cloud.pull=lambda *_:(2,{"format":document["format"],
+                    "profiles":[{**document["profiles"][0],
+                                 "id":remote.id,"name":remote.name}]})
+                with (patch.object(app,"_cloud_action",side_effect=immediate),
+                      patch("autumn_genlogin.ui.messagebox.askyesno",
+                            return_value=True)):
+                    click()
+                self.assertEqual(app.store.get(saved.id).name,"Win32 local")
+                self.assertEqual(app.store.get(remote.id).name,"Win32 remote only")
+                self.assertEqual(len(app.cloud_bases),1)
+            finally:
+                root.destroy()
+                if previous is None:
+                    os.environ.pop("AUTUMN_GENLOGIN_HOME",None)
+                else:
+                    os.environ["AUTUMN_GENLOGIN_HOME"]=previous
+
+
 if __name__=="__main__":
     unittest.main()
