@@ -204,5 +204,63 @@ class TkinterSmokeTests(unittest.TestCase):
                     os.environ["AUTUMN_GENLOGIN_HOME"]=previous
 
 
+    def test_cloud_pull_gui_refuses_unverified_overlap_and_adds_disjoint_profile(self):
+        """Real Tk Pull callback never silently clobbers an edited local UUID."""
+        import tkinter as tk
+        from types import SimpleNamespace
+        from autumn_genlogin.ui import App
+        from autumn_genlogin.models import Profile
+        from autumn_genlogin.team_sync import safe_profile_metadata
+        with tempfile.TemporaryDirectory() as temp:
+            previous=os.environ.get("AUTUMN_GENLOGIN_HOME")
+            os.environ["AUTUMN_GENLOGIN_HOME"]=temp
+            root=tk.Tk()
+            root.withdraw()
+            try:
+                app=App(root)
+                local=app.store.save(Profile(name="Local profile"))
+                app.refresh()
+                original=safe_profile_metadata(app.store)
+                conflicting={"format":original["format"],"profiles":[
+                    {**original["profiles"][0],"name":"Remote overwrite"}
+                ]}
+                cloud=SimpleNamespace(
+                    url="http://127.0.0.1:8899",
+                    pull=lambda *args:(1,conflicting),
+                )
+                app.cloud=cloud
+                app.cloud_fields["team_id"].set("synthetic-team")
+                app.cloud_fields["passphrase"].set("synthetic shared password")
+                warnings=[]
+                def immediate(task,finished=None):
+                    result=task()
+                    if finished is not None:finished(result)
+                with (patch.object(app,"_cloud_action",side_effect=immediate),
+                      patch("autumn_genlogin.ui.messagebox.showwarning",
+                            side_effect=lambda *args,**kwargs:warnings.append(args)),
+                      patch("autumn_genlogin.ui.messagebox.askyesno",return_value=True)):
+                    app.cloud_sync("profiles","pull")
+                    self.assertTrue(warnings,"Conflict must be visible to user")
+                    self.assertEqual(app.store.get(local.id).name,"Local profile")
+                    self.assertFalse(app.cloud_bases)
+
+                    added=Profile(name="Remote-only QA")
+                    remote={"format":original["format"],"profiles":[
+                        {**original["profiles"][0],
+                         "id":added.id,"name":added.name}
+                    ]}
+                    cloud.pull=lambda *args:(2,remote)
+                    app.cloud_sync("profiles","pull")
+                    self.assertEqual(app.store.get(local.id).name,"Local profile")
+                    self.assertEqual(app.store.get(added.id).name,"Remote-only QA")
+                    self.assertEqual(len(app.cloud_bases),1)
+            finally:
+                root.destroy()
+                if previous is None:
+                    os.environ.pop("AUTUMN_GENLOGIN_HOME",None)
+                else:
+                    os.environ["AUTUMN_GENLOGIN_HOME"]=previous
+
+
 if __name__ == "__main__":
     unittest.main()
