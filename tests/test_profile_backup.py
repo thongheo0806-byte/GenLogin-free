@@ -138,7 +138,7 @@ class EncryptedProfileBackupTests(unittest.TestCase):
         for cache in ("Cache", "Code Cache", "GPUCache", "GrShaderCache"):
             self.assertFalse((folder/cache).exists())
 
-    def test_link_in_skipped_cache_is_rejected_before_pruning(self):
+    def test_symlink_inside_pruned_cache_is_never_followed(self):
         cached=self.folder/"Default"/"Cache"
         cached.mkdir(parents=True)
         outside=self.root/"external-private"
@@ -152,6 +152,19 @@ class EncryptedProfileBackupTests(unittest.TestCase):
         # such a pruned tree is not traversed and cannot be archived.
         self.assertEqual(self._export(),2)
         self.assertNotIn(b"never include",self.destination.read_bytes())
+
+    def test_cache_directory_itself_must_not_be_a_symlink(self):
+        outside=self.root/"external-cache"
+        outside.mkdir()
+        (outside/"sensitive").write_bytes(b"outside")
+        alias=self.folder/"Default"/"Cache"
+        try:
+            alias.symlink_to(outside,target_is_directory=True)
+        except (OSError,NotImplementedError):
+            self.skipTest("Directory symlinks unavailable")
+        with self.assertRaisesRegex(ValueError,"Linked browser data"):
+            self._export()
+        self.assertFalse(self.destination.exists())
 
     def test_wrong_passphrase_and_tamper_do_not_install_any_profile(self):
         self._export()
