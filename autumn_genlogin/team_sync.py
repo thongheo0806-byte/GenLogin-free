@@ -26,6 +26,17 @@ from uuid import UUID, uuid4
 
 FORMAT = "AutumnGenLogin/encrypted-1"
 MAX_DOCUMENT = 1024 * 1024
+# Old Hub users/documents used unversioned scrypt 2**14. New writes use
+# 2**15 and bind the exact versioned KDF parameters into AES-GCM AAD.
+# Bounds prevent malicious envelopes from requesting unbounded CPU/RAM.
+LEGACY_SCRYPT_LOG_N = 14
+CURRENT_SCRYPT_LOG_N = 15
+MAX_SCRYPT_LOG_N = 17
+SCRYPT_MAXMEM = 256 * 1024 * 1024
+SCRYPT_R = 8
+SCRYPT_P = 1
+ENVELOPE_FIELDS = frozenset({"format", "salt", "nonce", "ciphertext"})
+
 # Bound damage by a single compromised editor even if team-wide quota remains.
 MAX_MEMBER_SESSION_DOCUMENTS = 256
 MAX_MEMBER_SESSION_BYTES = 64 * 1024 * 1024
@@ -53,41 +64,84 @@ def _unb64(v:str) -> bytes:
     return base64.b64decode(v,validate=True)
 
 
+def _scrypt_key(secret: str, salt: bytes, *, log_n: int,
+                dklen: int = 32) -> bytes:
+    if type(log_n) is not int or not LEGACY_SCRYPT_LOG_N <= log_n <= MAX_SCRYPT_LOG_N:
+        raise ValueError("Unsupported scrypt work factor")
+    return hashlib.scrypt(
+        secret.encode("utf-8"), salt=salt, n=1 << log_n,
+        r=SCRYPT_R, p=SCRYPT_P, dklen=dklen, maxmem=SCRYPT_MAXMEM)
+
+
+def _envelope_kdf(blob: object) -> tuple[int, bytes]:
+    """Validate bounded KDF metadata and return (log_n, authenticated AAD).
+
+    Legacy ciphertext had no KDF field and authenticated only FORMAT.
+    New ciphertext authenticates the canonical KDF header as well so the
+    work factor cannot be silently changed after encryption.
+    """
+    if not isinstance(blob, dict) or blob.get("format") != FORMAT:
+        raise ValueError("Invalid encrypted document")
+    fields = set(blob)
+    if fields == ENVELOPE_FIELDS:
+        return LEGACY_SCRYPT_LOG_N, FORMAT.encode()
+    if fields != (ENVELOPE_FIELDS | {"kdf"}):
+        raise ValueError("Invalid encrypted document fields")
+    kdf = blob["kdf"]
+    if (not isinstance(kdf, dict) or set(kdf) != {"name", "log_n", "r", "p"}
+            or kdf["name"] != "scrypt" or type(kdf["log_n"]) is not int
+            or not LEGACY_SCRYPT_LOG_N <= kdf["log_n"] <= MAX_SCRYPT_LOG_N
+            or type(kdf["r"]) is not int or kdf["r"] != SCRYPT_R
+            or type(kdf["p"]) is not int or kdf["p"] != SCRYPT_P):
+        raise ValueError("Unsupported encrypted document KDF")
+    encoded = json.dumps(kdf, sort_keys=True, separators=(",", ":")).encode()
+    return kdf["log_n"], FORMAT.encode() + b"|kdf|" + encoded
+
+
 def _validate_encrypted_envelope(blob: object) -> None:
-    """Check envelope structure only; the hub has no key to verify GCM tags."""
-    if not isinstance(blob, dict) or set(blob) != {"format", "salt", "nonce", "ciphertext"} or blob["format"] != FORMAT:
-        raise HubError(400, "Invalid encrypted document envelope")
+    """Check the envelope structure; only clients can authenticate ciphertext."""
     try:
+        _envelope_kdf(blob)
         salt, nonce, ciphertext = (_unb64(blob[k]) for k in ("salt", "nonce", "ciphertext"))
-    except (ValueError, TypeError, binascii.Error):
+    except (KeyError, ValueError, TypeError, binascii.Error):
         raise HubError(400, "Invalid encrypted document envelope") from None
     if len(salt) != 16 or len(nonce) != 12 or not 18 <= len(ciphertext) <= MAX_DOCUMENT:
         raise HubError(400, "Invalid encrypted document envelope")
 
 
 def encrypt_document(data: dict, passphrase: str) -> dict:
-    """Encrypt authenticated JSON; the passphrase is not sent to the server."""
-    if not isinstance(passphrase,str) or len(passphrase) < 12:
+    """Encrypt JSON with a versioned, authenticated work factor."""
+    if not isinstance(passphrase, str) or len(passphrase) < 12:
         raise ValueError("Sync passphrase needs at least 12 characters")
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
     salt, nonce = secrets.token_bytes(16), secrets.token_bytes(12)
-    key = hashlib.scrypt(passphrase.encode(),salt=salt,n=2**14,r=8,p=1,dklen=32)
-    raw = json.dumps(data,sort_keys=True,separators=(",",":"),ensure_ascii=False).encode()
-    if len(raw) > MAX_DOCUMENT//2: raise ValueError("Sync document too large")
-    return {"format":FORMAT,"salt":_b64(salt),"nonce":_b64(nonce),
-            "ciphertext":_b64(AESGCM(key).encrypt(nonce, raw, FORMAT.encode()))}
+    kdf = {"name": "scrypt", "log_n": CURRENT_SCRYPT_LOG_N,
+           "r": SCRYPT_R, "p": SCRYPT_P}
+    envelope = {"format": FORMAT, "salt": _b64(salt), "nonce": _b64(nonce),
+                "kdf": kdf}
+    _, aad = _envelope_kdf({**envelope, "ciphertext": ""})
+    key = _scrypt_key(passphrase, salt, log_n=CURRENT_SCRYPT_LOG_N)
+    raw = json.dumps(data, sort_keys=True, separators=(",", ":"),
+                     ensure_ascii=False).encode()
+    if len(raw) > MAX_DOCUMENT // 2:
+        raise ValueError("Sync document too large")
+    envelope["ciphertext"] = _b64(AESGCM(key).encrypt(nonce, raw, aad))
+    return envelope
 
 
 def decrypt_document(blob: dict, passphrase: str) -> dict:
-    if not isinstance(blob,dict) or set(blob)!={"format","salt","nonce","ciphertext"} or blob.get("format")!=FORMAT:
-        raise ValueError("Invalid encrypted document")
+    if not isinstance(passphrase, str) or len(passphrase) < 12:
+        raise ValueError("Sync passphrase needs at least 12 characters")
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-    salt,nonce,encrypted=(_unb64(blob[k]) for k in ("salt","nonce","ciphertext"))
-    if len(salt)!=16 or len(nonce)!=12: raise ValueError("Invalid encryption parameters")
-    key=hashlib.scrypt(passphrase.encode(),salt=salt,n=2**14,r=8,p=1,dklen=32)
-    plaintext=AESGCM(key).decrypt(nonce,encrypted,FORMAT.encode())
-    doc=json.loads(plaintext)
-    if not isinstance(doc,dict): raise ValueError("Invalid document")
+    log_n, aad = _envelope_kdf(blob)
+    salt, nonce, encrypted = (_unb64(blob[k]) for k in ("salt", "nonce", "ciphertext"))
+    if len(salt) != 16 or len(nonce) != 12 or not 18 <= len(encrypted) <= MAX_DOCUMENT:
+        raise ValueError("Invalid encryption parameters")
+    key = _scrypt_key(passphrase, salt, log_n=log_n)
+    plaintext = AESGCM(key).decrypt(nonce, encrypted, aad)
+    doc = json.loads(plaintext)
+    if not isinstance(doc, dict):
+        raise ValueError("Invalid document")
     return doc
 
 
@@ -113,7 +167,8 @@ class TeamHub:
         with closing(self._db()) as c:
             c.executescript("""
                 CREATE TABLE IF NOT EXISTS users(id TEXT PRIMARY KEY,username TEXT NOT NULL UNIQUE,
-                    salt BLOB NOT NULL,password_hash BLOB NOT NULL);
+                    salt BLOB NOT NULL,password_hash BLOB NOT NULL,
+                    password_kdf_log_n INTEGER NOT NULL DEFAULT 14);
                 CREATE TABLE IF NOT EXISTS tokens(hash TEXT PRIMARY KEY,user_id TEXT NOT NULL,
                     expires REAL NOT NULL);
                 CREATE TABLE IF NOT EXISTS teams(id TEXT PRIMARY KEY,name TEXT NOT NULL);
@@ -126,11 +181,16 @@ class TeamHub:
                     session_id TEXT NOT NULL,revoked_at REAL NOT NULL,
                     PRIMARY KEY(team_id,session_id));
             """)
-            # Additive migration: existing encrypted archives remain readable.
+            # Additive migrations preserve stored legacy password hashes and
+            # encrypted archives; successful logins upgrade old password hashes.
             columns={row["name"] for row in c.execute("PRAGMA table_info(documents)")}
             if "creator_id" not in columns:
                 c.execute("ALTER TABLE documents ADD COLUMN creator_id TEXT NOT NULL DEFAULT ''")
-                c.commit()
+            user_columns={row["name"] for row in c.execute("PRAGMA table_info(users)")}
+            if "password_kdf_log_n" not in user_columns:
+                c.execute("ALTER TABLE users ADD COLUMN password_kdf_log_n "
+                          "INTEGER NOT NULL DEFAULT 14")
+            c.commit()
 
     def _db(self):
         c=sqlite3.connect(self.db_path,timeout=10)
@@ -145,23 +205,52 @@ class TeamHub:
         if not isinstance(password,str) or len(password)<12 or len(password)>256:
             raise HubError(400,"Password must be 12-256 characters")
         ident=str(uuid4());salt=secrets.token_bytes(16)
-        digest=hashlib.scrypt(password.encode(),salt=salt,n=2**14,r=8,p=1)
+        digest=_scrypt_key(password, salt, log_n=CURRENT_SCRYPT_LOG_N, dklen=64)
         try:
             with closing(self._db()) as c:
                 with c:
-                    c.execute("INSERT INTO users VALUES(?,?,?,?)",(ident,username,salt,digest))
+                    c.execute("INSERT INTO users "
+                              "(id,username,salt,password_hash,password_kdf_log_n) "
+                              "VALUES(?,?,?,?,?)",
+                              (ident,username,salt,digest,CURRENT_SCRYPT_LOG_N))
         except sqlite3.IntegrityError: raise HubError(409,"Username already exists") from None
         return ident
 
     def login(self,username:str,password:str) -> str:
+        if not isinstance(username,str) or not isinstance(password,str):
+            raise HubError(401,"Invalid credentials")
         with closing(self._db()) as c:
             row=c.execute("SELECT * FROM users WHERE username=?",(username,)).fetchone()
-        if not row or not hmac.compare_digest(hashlib.scrypt(str(password).encode(),salt=row["salt"],n=2**14,r=8,p=1),row["password_hash"]):
+        try:
+            log_n=row["password_kdf_log_n"] if row is not None else None
+            valid=(row is not None and type(log_n) is int
+                   and LEGACY_SCRYPT_LOG_N <= log_n <= MAX_SCRYPT_LOG_N
+                   and hmac.compare_digest(
+                       _scrypt_key(password,row["salt"],log_n=log_n,dklen=64),
+                       row["password_hash"]))
+        except (ValueError,TypeError):
+            valid=False
+        if not valid:
             raise HubError(401,"Invalid credentials")
         token=secrets.token_urlsafe(32)
         with closing(self._db()) as c:
             with c:
-                c.execute("INSERT INTO tokens VALUES(?,?,?)",(hashlib.sha256(token.encode()).hexdigest(),row["id"],time.time()+86400))
+                if log_n < CURRENT_SCRYPT_LOG_N:
+                    # Upgrade *only after successful authentication*. CAS on
+                    # the previous hash prevents losing another login's
+                    # concurrent upgrade. A legacy user keeps the same ID.
+                    new_salt=secrets.token_bytes(16)
+                    upgraded=_scrypt_key(password,new_salt,
+                                         log_n=CURRENT_SCRYPT_LOG_N,dklen=64)
+                    c.execute(
+                        "UPDATE users SET salt=?,password_hash=?,password_kdf_log_n=? "
+                        "WHERE id=? AND salt=? AND password_hash=? "
+                        "AND password_kdf_log_n=?",
+                        (new_salt,upgraded,CURRENT_SCRYPT_LOG_N,row["id"],
+                         row["salt"],row["password_hash"],log_n))
+                c.execute("INSERT INTO tokens VALUES(?,?,?)",
+                          (hashlib.sha256(token.encode()).hexdigest(),
+                           row["id"],time.time()+86400))
         return token
 
     def identity(self,token:str) -> str:
