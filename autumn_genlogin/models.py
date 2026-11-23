@@ -117,12 +117,14 @@ def validated_steps(source: object) -> list[dict]:
         allowed = {"action", *kinds[action]}
         # Recorded DOM actions can target a precise tab slot and nested frame.
         # Legacy steps without this context still target the first tab.
-        if "tab_index" in item or "tab_count" in item or "frames" in item:
+        if any(key in item for key in (
+                "tab_index", "tab_count", "frames", "tab_token", "frame_tokens")):
             if "selector" not in kinds[action]:
                 raise ValueError(f"Step {number}: tab/frame context requires a DOM selector")
             allowed.update({"tab_index", "tab_count"})
-            if "frames" in item:
-                allowed.add("frames")
+            for optional in ("frames", "tab_token", "frame_tokens"):
+                if optional in item:
+                    allowed.add(optional)
         if set(item) != allowed:
             raise ValueError(f"Step {number}: unexpected or missing fields")
         for key in kinds[action]:
@@ -147,6 +149,27 @@ def validated_steps(source: object) -> list[dict]:
                            or any(ord(ch) < 32 or ord(ch) == 127 for ch in sel)
                            for sel in frames)):
                 raise ValueError(f"Step {number}: invalid iframe selector path")
+            if "tab_token" in item:
+                token=item["tab_token"]
+                if (not isinstance(token,str) or
+                        not re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}",token)):
+                    raise ValueError(f"Step {number}: invalid live tab identity token")
+                from uuid import UUID
+                if UUID(token).version!=4:
+                    raise ValueError(f"Step {number}: invalid live tab identity token")
+                if frames and "frame_tokens" not in item:
+                    raise ValueError(f"Step {number}: missing live iframe identities")
+            if "frame_tokens" in item:
+                tokens=item["frame_tokens"]
+                if ("tab_token" not in item or not frames or
+                        not isinstance(tokens,list) or len(tokens)!=len(frames)
+                        or any(not isinstance(token,str) or
+                               not re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}",token)
+                               for token in tokens)):
+                    raise ValueError(f"Step {number}: invalid live iframe identities")
+                from uuid import UUID
+                if any(UUID(token).version!=4 for token in tokens):
+                    raise ValueError(f"Step {number}: invalid live iframe identities")
         if action == "goto":
             valid_http_url(item["url"])
         if action == "click_image" and not re.fullmatch(r"[0-9a-f]{64}", item["template_id"]):
