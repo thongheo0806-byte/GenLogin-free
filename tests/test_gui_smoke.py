@@ -101,7 +101,15 @@ class TkinterSmokeTests(unittest.TestCase):
                         entered.set()
                         release.wait(timeout=4)
                         return done
-                    with worker_patch(slow):
+                    completed=threading.Event()
+                    submit=app._run_ui_task
+                    def tracked(task,finished=None,**kwargs):
+                        def callback(result):
+                            if finished is not None:
+                                finished(result)
+                            completed.set()
+                        return submit(task,callback,**kwargs)
+                    with worker_patch(slow), patch.object(app,"_run_ui_task",side_effect=tracked):
                         with patch.object(app,"selected_id",return_value=master.id):
                             trigger()
                             self.assertTrue(entered.wait(timeout=2))
@@ -109,14 +117,11 @@ class TkinterSmokeTests(unittest.TestCase):
                             root.after(25,heartbeat.set)
                             self.assertTrue(pump(heartbeat.is_set,seconds=1),
                                             "Tk event loop froze behind a slow worker")
+                            self.assertFalse(completed.is_set(),
+                                             "Slow worker unexpectedly completed before release")
                             release.set()
-                            self.assertTrue(pump(
-                                lambda:app._ui_task_results.empty(),seconds=4))
-                            # Consume any result posted just after the initial
-                            # queue-empty check and verify no latent worker.
-                            self.assertTrue(pump(
-                                lambda:not app._recorder_starting and
-                                not app._qa_starting,seconds=4))
+                            self.assertTrue(pump(completed.is_set,seconds=4),
+                                            "Worker completion was not handled on the Tk loop")
 
                 run_slow(app.open_profile,
                          lambda fn:patch.object(app.manager,"start",side_effect=fn),
