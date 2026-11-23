@@ -110,9 +110,11 @@ class SignedMiniappsTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,"pinned to another publisher"):
             self.catalog.install_signed(alternate)
         self.assertEqual([r.id for r in self.catalog.list()],[first.id])
-        # Explicit unsigned manually-reviewed drafts still remain separate.
-        legacy=self.catalog.install({**self.manifest,"version":"2.0.0"})
-        self.assertEqual(legacy.signature_status,"unsigned")
+        # An unsigned update may not impersonate any installed signed name.
+        with self.assertRaisesRegex(ValueError,"unsigned updates are refused"):
+            self.catalog.install({**self.manifest,"version":"2.0.0"})
+        # Idempotent import of the exact signed content is still allowed.
+        self.assertEqual(self.catalog.install(self.manifest).id,first.id)
 
     def test_db_attestation_corruption_detected_and_no_silent_downgrade(self):
         fp=self.catalog.trust_publisher("Test",self.signed["public_key"])
@@ -123,9 +125,47 @@ class SignedMiniappsTests(unittest.TestCase):
                          (base64.b64encode(b"k"*64).decode(),signed.id))
         with self.assertRaisesRegex(ValueError,"signature is invalid"):
             self.catalog.get(signed.id)
-        with self.assertRaises(ValueError):
-            self.catalog.list()
+        listing=self.catalog.list()
+        self.assertEqual(len(listing),1)
+        self.assertEqual(listing[0].signature_status,"invalid")
         self.assertEqual(len(self.catalog.list_publishers()),1)
+        # A corrupt package can be removed without decoding its manifest.
+        self.catalog.remove(signed.id)
+        self.assertEqual(self.catalog.list(),[])
+
+    def test_name_pin_persists_after_uninstall_and_explicit_trust_revocation(self):
+        fp=self.catalog.trust_publisher("Original",self.signed["public_key"])
+        saved=self.catalog.install_signed(self.signed)
+        self.catalog.remove(saved.id)
+        self.catalog.untrust_publisher(fp)
+        self.assertEqual(self.catalog.list(),[])
+        with self.assertRaisesRegex(ValueError,"unsigned updates are refused"):
+            self.catalog.install({**self.manifest,"version":"1.0.2"})
+        other=Ed25519PrivateKey.generate()
+        replacement=sign_package({**self.manifest,"version":"1.0.3"},other)
+        self.catalog.trust_publisher("Replacement",replacement["public_key"])
+        with self.assertRaisesRegex(ValueError,"pinned to another publisher"):
+            self.catalog.install_signed(replacement)
+        # The durable pin survives reopening the database.
+        reopened=MiniAppLibrary(Store(self.home/"profile"))
+        with self.assertRaisesRegex(ValueError,"unsigned updates are refused"):
+            reopened.install(self.manifest)
+
+    def test_one_corrupt_miniapp_cannot_hide_another_valid_miniapp(self):
+        first=self.catalog.install(self.manifest)
+        second=self.catalog.install({**self.manifest,"name":"Other QA miniapp"})
+        with self.store._connect() as conn:
+            conn.execute("UPDATE miniapps SET manifest=? WHERE id=?",
+                         ("{bad-json",first.id))
+        listing=self.catalog.list()
+        self.assertEqual([item.signature_status for item in listing],
+                         ["invalid","unsigned"] if listing[0].id==first.id
+                         else ["unsigned","invalid"])
+        self.assertEqual(self.catalog.get(second.id)["name"],"Other QA miniapp")
+        with self.assertRaises(ValueError):
+            self.catalog.get(first.id)
+        self.catalog.remove(first.id)
+        self.assertEqual([item.id for item in self.catalog.list()],[second.id])
 
     def test_private_pem_signing_cli_preserves_existing_output_and_prints_only_public_key(self):
         from cryptography.hazmat.primitives import serialization
