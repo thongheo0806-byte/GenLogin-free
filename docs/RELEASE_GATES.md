@@ -143,3 +143,16 @@ or permission to create EXE artifacts.**
 - This improves GUI/API history latency but does not eliminate lease checks
   for genuinely running batches or replace storage corruption/disaster
   recovery acceptance.
+
+## 2026-11-23 Playwright background task ownership (development)
+
+- Page-close callbacks and user-triggered stop-session callbacks now retain a
+  strong `asyncio.Task` reference in a bounded lifecycle registry on the
+  owning Playwright loop. Completed or cancelled tasks remove themselves.
+- Unexpected asynchronous errors are reported by **exception type only**;
+  no browser URL, cookie, page value or exception body is placed in the GUI
+  log. Driver shutdown still cancels/awaits pending tasks through its existing
+  loop-finalization path, not a new detached thread.
+- Regression coverage verifies task lifetime, cancellation cleanup and error
+  redaction; it is not a guarantee that a crashed browser, OS process or disk
+  fault can never interrupt a task.
