@@ -1416,7 +1416,9 @@ class App:
         scope=(client.url,team_id,name)
         if direction=="push":
             try:
-                doc=(safe_profile_metadata(self.store) if name=="profiles"
+                # Profile catalog snapshots can wait on SQLite; take them
+                # on the sync worker rather than freezing the Tk thread.
+                doc=(None if name=="profiles"
                      else {"format":"AutumnGenLogin/workflow-1",
                            "workflow":self.current_steps()})
             except Exception as exc:
@@ -1430,6 +1432,7 @@ class App:
             baseline=self.cloud_bases.get(scope)
             expected_rev,base_doc=(baseline if baseline else (None,None))
             def inspect():
+                local_doc=safe_profile_metadata(self.store) if name=="profiles" else doc
                 remote_rev,remote_doc=client.pull(team_id,name,passphrase)
                 if expected_rev is not None and (
                     remote_rev < expected_rev or
@@ -1437,11 +1440,11 @@ class App:
                 ):
                     return {"conflicts":("remote-revision-regressed",)}
                 merged,conflicts=merge_cloud_documents(
-                    name,base_doc,doc,remote_doc)
+                    name,base_doc,local_doc,remote_doc)
                 if conflicts:
                     return {"conflicts":conflicts}
                 return {"revision":remote_rev,"remote":remote_doc,
-                        "merged":merged,
+                        "merged":merged,"local":local_doc,
                         "needs_review":remote_doc is not None and
                                         remote_doc!=base_doc}
             def inspected(state):
@@ -1471,6 +1474,10 @@ class App:
                     self.cloud_status.set("Merge cancelled: nothing uploaded")
                     return
                 def submit():
+                    # A concurrent local edit after the preview also must not
+                    # publish an obsolete profile snapshot under user consent.
+                    if name=="profiles" and safe_profile_metadata(self.store)!=state["local"]:
+                        raise ValueError("Local profiles changed since upload preview; review again")
                     # Server-side optimistic CAS protects against another
                     # writer racing between preview and this upload.
                     return client.push(team_id,name,state["revision"],merged,passphrase)
@@ -1485,67 +1492,87 @@ class App:
                 self._cloud_action(submit,submitted)
             self._cloud_action(inspect,inspected)
         else:
+            # Capture the baseline on the Tk owner thread, then perform ALL
+            # network, SQLite and merge computation in the background.
+            prior=deepcopy(self.cloud_bases.get(scope))
             def task():
-                return client.pull(team_id,name,passphrase)
-            def done(value):
-                revision,doc=value
+                revision,doc=client.pull(team_id,name,passphrase)
+                state={"revision":revision,"doc":doc}
+                if not doc or name!="profiles":
+                    return state
+                from .cloud_merge import prepare_cloud_profile_pull
+                if prior is not None and (revision<prior[0] or
+                        (revision==prior[0] and doc!=prior[1])):
+                    return {**state,"conflicts":("remote-revision-regressed",)}
+                local_doc=safe_profile_metadata(self.store)
+                merged,conflicts=prepare_cloud_profile_pull(
+                    local_doc,doc,prior[1] if prior else None)
+                state["conflicts"]=conflicts
+                if conflicts:
+                    return state
+                before={item["id"]:item for item in local_doc["profiles"]}
+                changes=[item for item in merged["profiles"]
+                         if before.get(item["id"])!=item]
+                state["expected_local"]=local_doc
+                state["pending"]={"format":merged["format"],"profiles":changes}
+                return state
+
+            def done(state):
+                # Discard replies from a login or team no longer displayed.
+                if (self.cloud is not client or
+                        self.cloud_fields["team_id"].get().strip()!=team_id or
+                        self.cloud_bases.get(scope)!=prior):
+                    self.cloud_status.set("Cloud context changed; repeat the Pull review")
+                    return
+                revision,doc=state["revision"],state["doc"]
                 if not doc:
                     return self.cloud_status.set("No remote document")
-                expected_local=None
-                pending=None
+                if state.get("conflicts"):
+                    self.cloud_status.set(
+                        f"Pull blocked: {len(state['conflicts'])} local/remote metadata conflict(s)")
+                    return messagebox.showwarning(
+                        "Cloud pull needs conflict resolution",
+                        f"Found {len(state['conflicts'])} overlapping or unverified field(s). "
+                        "No local profiles were modified. Review and reconcile "
+                        "the same profile ID on both sides before retrying.",
+                        parent=self.root)
                 if name=="profiles":
-                    from .cloud_merge import prepare_cloud_profile_pull
-                    try:
-                        # Use the last accepted remote snapshot, not a
-                        # possibly edited local copy, as common ancestor.
-                        prior=self.cloud_bases.get(scope)
-                        if prior is not None and (revision<prior[0] or
-                                (revision==prior[0] and doc!=prior[1])):
-                            raise ValueError("Remote revision regressed or mutated")
-                        expected_local=safe_profile_metadata(self.store)
-                        merged,conflicts=prepare_cloud_profile_pull(
-                            expected_local,doc,prior[1] if prior else None)
-                    except Exception as exc:
-                        return messagebox.showerror(
-                            "Cloud pull",type(exc).__name__,parent=self.root)
-                    if conflicts:
-                        self.cloud_status.set(
-                            f"Pull blocked: {len(conflicts)} local/remote metadata conflict(s)")
-                        return messagebox.showwarning(
-                            "Cloud pull needs conflict resolution",
-                            f"Found {len(conflicts)} overlapping or unverified field(s). "
-                            "No local profiles were modified. Review and reconcile "
-                            "the same profile ID on both sides before retrying.",
-                            parent=self.root)
-                    before={item["id"]:item for item in expected_local["profiles"]}
-                    # Upload is forbidden for profiles which happen to exist
-                    # locally but have no remote counterpart. Only changed
-                    # records are written; active unchanged profiles stay open.
-                    changes=[item for item in merged["profiles"]
-                             if before.get(item["id"])!=item]
-                    pending={"format":merged["format"],"profiles":changes}
-                    summary=(f"Apply {len(changes)} new/updated safe profile metadata "
-                             "record(s)? Local-only records and proxy/vault "
-                             "credentials will be preserved. "
+                    pending=state["pending"]
+                    summary=(f"Apply {len(pending['profiles'])} new/updated safe "
+                             "profile metadata record(s)? Local-only records "
+                             "and proxy/vault credentials will be preserved. "
                              "Conflicting local edits were not overwritten.")
                 else:
                     summary=(f"Import encrypted {name} revision {revision} into local data? "
                              "This establishes a baseline for future conflict detection.")
-                if not messagebox.askyesno(
-                    "Cloud preview",summary,parent=self.root
-                ):
+                if not messagebox.askyesno("Cloud preview",summary,parent=self.root):
                     return
-                try:
-                    if name=="profiles":
-                        from .team_sync import merge_safe_profiles
-                        count=merge_safe_profiles(
-                            self.store,pending,active=self.manager.active,
-                            expected_local=expected_local)
+
+                def accepted():
+                    if self.cloud is not client or self.cloud_bases.get(scope)!=prior:
+                        self.cloud_status.set("Cloud context changed; repeat Pull")
+                        return
+                    self.cloud_bases[scope]=(revision,deepcopy(doc))
+                    self.cloud_revision[name]=revision
+
+                if name=="profiles":
+                    from .team_sync import merge_safe_profiles
+                    def apply():
+                        return merge_safe_profiles(
+                            self.store,state["pending"],
+                            active=self.manager.active,
+                            expected_local=state["expected_local"])
+                    def applied(count):
                         self.refresh()
                         self.cloud_status.set(
                             f"Reconciled {count} changed profile metadata rows; "
                             "local-only profiles preserved")
-                    else:
+                        accepted()
+                    # SQLite BEGIN IMMEDIATE and save now execute on a
+                    # thread-affine worker, never inside a Tk callback.
+                    self._cloud_action(apply,applied)
+                else:
+                    try:
                         if doc.get("format")!="AutumnGenLogin/workflow-1":
                             raise ValueError("Wrong workflow format")
                         flow=doc["workflow"]
@@ -1556,13 +1583,10 @@ class App:
                             self.builder.set_steps(validated_steps(flow))
                             self.flow_tabs.select(0)
                         self.cloud_status.set("Downloaded workflow")
-                    # Record the remotely committed snapshot, NOT the merged
-                    # local view: future pushes can still reconcile local edits.
-                    self.cloud_bases[scope]=(revision,deepcopy(doc))
-                    self.cloud_revision[name]=revision
-                except Exception as exc:
-                    self.cloud_status.set("Pull failed: no baseline was updated")
-                    messagebox.showerror("Team sync",type(exc).__name__,parent=self.root)
+                        accepted()
+                    except Exception as exc:
+                        self.cloud_status.set("Pull failed: no baseline was updated")
+                        messagebox.showerror("Team sync",type(exc).__name__,parent=self.root)
             self._cloud_action(task,done)
 
     def refresh_extensions(self):
