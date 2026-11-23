@@ -54,8 +54,12 @@ def sanitize_recorded_event(payload: object, *, allow_context: bool = False) -> 
         # page-supplied context fields are ALWAYS discarded by default.
         step["tab_index"] = payload["tab_index"]
         step["tab_count"] = payload.get("tab_count")
+        if "tab_token" in payload:
+            step["tab_token"] = payload["tab_token"]
         if "frames" in payload:
             step["frames"] = payload["frames"]
+        if "frame_tokens" in payload:
+            step["frame_tokens"] = payload["frame_tokens"]
     try:
         return validated_steps([step])[0]
     except (TypeError, ValueError):
@@ -137,12 +141,14 @@ def review_recording(events: list[dict], *, navigation_boundaries: int = 0,
     if any("tab_index" in x for x in cleaned):
         warnings.append(
             "Tab positions and tab counts must match the recording; mismatches fail closed. "
-            "Review tab identities manually because ordinals do not prove page identity."
+            "Legacy ordinal-only recordings are refused at runtime. "
+            "Live identity tokens bind only to the same open browser session; "
+            "a restarted session requires recording again."
         )
     if any(x.get("frames") for x in cleaned):
         warnings.append(
             "Iframe selector chains must match the current DOM; cross-origin/frame changes may "
-            "prevent replay. Check each iframe target before execution."
+            "prevent replay. Frame identity tokens also require the original live frames."
         )
     return RecordingReview(deepcopy(cleaned), redacted, navigation_boundaries,
                            ignored_tabs, tuple(warnings))
