@@ -7,6 +7,7 @@ Server defaults to loopback; place behind a TLS reverse proxy for remote use.
 from __future__ import annotations
 
 import base64
+import binascii
 import hashlib
 import hmac
 import json
@@ -25,6 +26,10 @@ from uuid import UUID, uuid4
 
 FORMAT = "AutumnGenLogin/encrypted-1"
 MAX_DOCUMENT = 1024 * 1024
+# Bound damage by a single compromised editor even if team-wide quota remains.
+MAX_MEMBER_SESSION_DOCUMENTS = 256
+MAX_MEMBER_SESSION_BYTES = 64 * 1024 * 1024
+REQUEST_IO_TIMEOUT = 2.0
 ROLE_LEVEL = {"viewer":0, "editor":1,"admin":2,"owner":3}
 # Whitelist immutable, opaque session-archive parts and the final manifest.
 # No arbitrary document names, paths, query strings or token-like values.
@@ -46,6 +51,18 @@ def _b64(v:bytes) -> str:
 def _unb64(v:str) -> bytes:
     if not isinstance(v,str) or len(v) > MAX_DOCUMENT*2: raise ValueError("Invalid encoded data")
     return base64.b64decode(v,validate=True)
+
+
+def _validate_encrypted_envelope(blob: object) -> None:
+    """Check envelope structure only; the hub has no key to verify GCM tags."""
+    if not isinstance(blob, dict) or set(blob) != {"format", "salt", "nonce", "ciphertext"} or blob["format"] != FORMAT:
+        raise HubError(400, "Invalid encrypted document envelope")
+    try:
+        salt, nonce, ciphertext = (_unb64(blob[k]) for k in ("salt", "nonce", "ciphertext"))
+    except (ValueError, TypeError, binascii.Error):
+        raise HubError(400, "Invalid encrypted document envelope") from None
+    if len(salt) != 16 or len(nonce) != 12 or not 18 <= len(ciphertext) <= MAX_DOCUMENT:
+        raise HubError(400, "Invalid encrypted document envelope")
 
 
 def encrypt_document(data: dict, passphrase: str) -> dict:
@@ -103,11 +120,17 @@ class TeamHub:
                 CREATE TABLE IF NOT EXISTS members(team_id TEXT NOT NULL,user_id TEXT NOT NULL,
                     role TEXT NOT NULL,PRIMARY KEY(team_id,user_id));
                 CREATE TABLE IF NOT EXISTS documents(team_id TEXT NOT NULL,name TEXT NOT NULL,
-                    revision INTEGER NOT NULL,blob TEXT NOT NULL,PRIMARY KEY(team_id,name));
+                    revision INTEGER NOT NULL,blob TEXT NOT NULL,
+                    creator_id TEXT NOT NULL DEFAULT '',PRIMARY KEY(team_id,name));
                 CREATE TABLE IF NOT EXISTS revoked_sessions(team_id TEXT NOT NULL,
                     session_id TEXT NOT NULL,revoked_at REAL NOT NULL,
                     PRIMARY KEY(team_id,session_id));
             """)
+            # Additive migration: existing encrypted archives remain readable.
+            columns={row["name"] for row in c.execute("PRAGMA table_info(documents)")}
+            if "creator_id" not in columns:
+                c.execute("ALTER TABLE documents ADD COLUMN creator_id TEXT NOT NULL DEFAULT ''")
+                c.commit()
 
     def _db(self):
         c=sqlite3.connect(self.db_path,timeout=10)
@@ -215,10 +238,9 @@ class TeamHub:
         self.require(actor,team_id,"editor")
         if not _allowed_document_name(name): raise HubError(400,"Invalid document type")
         if type(revision) is not int or revision<0: raise HubError(400,"Invalid revision")
-        if not isinstance(blob,dict) or blob.get("format")!=FORMAT:
-            raise HubError(400,"Only encrypted documents are accepted")
+        _validate_encrypted_envelope(blob)
         raw=json.dumps(blob,separators=(",",":"))
-        if len(raw)>MAX_DOCUMENT: raise HubError(413,"Document too large")
+        if len(raw.encode("utf-8"))>MAX_DOCUMENT: raise HubError(413,"Document too large")
         # BEGIN IMMEDIATE serializes competing updates, including distinct HTTP threads.
         with closing(self._db()) as c:
             c.execute("BEGIN IMMEDIATE")
@@ -246,13 +268,52 @@ class TeamHub:
                         (team_id,)).fetchone()[0]
                     if count>=2048:
                         raise HubError(413,"Team archive storage quota exceeded")
-                c.execute("INSERT INTO documents VALUES(?,?,?,?) ON CONFLICT(team_id,name) DO UPDATE SET revision=excluded.revision,blob=excluded.blob",
-                          (team_id,name,actual+1,raw))
+                    owned=c.execute(
+                        "SELECT COUNT(*) AS documents,COALESCE(SUM(LENGTH(blob)),0) AS bytes "
+                        "FROM documents WHERE team_id=? AND creator_id=? "
+                        "AND name LIKE 'session-%'", (team_id,actor)).fetchone()
+                    if (owned["documents"]>=MAX_MEMBER_SESSION_DOCUMENTS or
+                            owned["bytes"]+len(raw.encode("utf-8"))>MAX_MEMBER_SESSION_BYTES):
+                        raise HubError(413,"Member archive storage quota exceeded")
+                c.execute(
+                    "INSERT INTO documents(team_id,name,revision,blob,creator_id) "
+                    "VALUES(?,?,?,?,?) ON CONFLICT(team_id,name) "
+                    "DO UPDATE SET revision=excluded.revision,blob=excluded.blob",
+                    (team_id,name,actual+1,raw,actor))
                 c.commit()
             except BaseException:
                 c.rollback();raise
         return actual+1
 
+
+    def list_sessions(self, actor: str, team_id: str) -> list[dict]:
+        """Admin-only discovery for cleanup of orphan or abusive archives."""
+        self.require(actor, team_id, "admin")
+        with closing(self._db()) as c:
+            rows=c.execute(
+                "SELECT d.name,LENGTH(d.blob) AS bytes,u.username "
+                "FROM documents d LEFT JOIN users u ON u.id=d.creator_id "
+                "WHERE d.team_id=? AND d.name LIKE 'session-%' ORDER BY d.name",
+                (team_id,)).fetchall()
+        sessions={}
+        for row in rows:
+            match=_SESSION_NAME.fullmatch(row["name"])
+            if match is None:
+                continue
+            sid=match.group(1)
+            entry=sessions.setdefault(sid, {
+                "session_id":sid, "documents":0, "stored_bytes":0,
+                "has_manifest":False, "uploaders":set()
+            })
+            entry["documents"]+=1
+            entry["stored_bytes"]+=row["bytes"]
+            entry["has_manifest"] |= row["name"].endswith("-manifest")
+            if row["username"] is not None:
+                entry["uploaders"].add(row["username"])
+        return [
+            {**entry, "uploaders":sorted(entry["uploaders"])}
+            for _sid,entry in sorted(sessions.items())
+        ]
 
     def revoke_session(self, actor:str, team_id:str, session_id:str) -> int:
         """Owner/admin can atomically tombstone an archive and purge its ciphertext.
@@ -301,6 +362,11 @@ class HubHTTPServer(ThreadingHTTPServer):
 
 
 class HubHandler(BaseHTTPRequestHandler):
+    def setup(self):
+        super().setup()
+        # A client that stalls mid-header or mid-body must not pin a handler.
+        self.connection.settimeout(REQUEST_IO_TIMEOUT)
+
     def log_message(self,*args):
         # Never log credentials, tokens, user names or encrypted metadata.
         pass
@@ -332,13 +398,15 @@ class HubHandler(BaseHTTPRequestHandler):
         path=urllib.parse.urlparse(self.path)
         segments=[urllib.parse.unquote(x) for x in path.path.strip("/").split("/")]
         hub=self.server.hub
+        anonymous=self.command=="POST" and segments in (["register"], ["login"])
+        # Authorize before reading potentially slow request bodies whenever possible.
+        actor=None if anonymous else self._actor()
         body=self._body() if self.command in {"POST","PUT"} else {}
         if not isinstance(body,dict): raise HubError(400,"Expected JSON object")
         if segments==["register"] and self.command=="POST":
             hub.register(body.get("username"),body.get("password"));return 201,{"status":"created"}
         if segments==["login"] and self.command=="POST":
             return 200,{"token":hub.login(body.get("username"),body.get("password"))}
-        actor=self._actor()
         if segments==["logout"] and self.command=="POST":
             hub.logout(self.headers.get("Authorization", "")[7:])
             return 200,{"status":"logged-out"}
@@ -349,6 +417,9 @@ class HubHandler(BaseHTTPRequestHandler):
             if self.command=="GET": return 200,{"members":hub.members(actor,team_id)}
             if self.command=="POST":
                 hub.set_member(actor,team_id,body.get("username"),body.get("role"));return 200,{"status":"ok"}
+        if len(segments)==3 and segments[0]=="teams" and segments[2]=="sessions":
+            if self.command=="GET":
+                return 200,{"sessions":hub.list_sessions(actor,segments[1])}
         if len(segments)==4 and segments[0]=="teams" and segments[2]=="sessions":
             if self.command=="DELETE":
                 count=hub.revoke_session(actor,segments[1],segments[3])
@@ -422,6 +493,8 @@ class CloudClient:
     def set_member(self,team_id,username,role):
         return self.request("POST",f"/teams/{team_id}/members",{"username":username,"role":role})
     def members(self,team_id):return self.request("GET",f"/teams/{team_id}/members")["members"]
+    def list_sessions(self,team_id):
+        return self.request("GET",f"/teams/{team_id}/sessions")["sessions"]
     def revoke_session(self,team_id,session_id):
         try:
             canonical=str(UUID(session_id))

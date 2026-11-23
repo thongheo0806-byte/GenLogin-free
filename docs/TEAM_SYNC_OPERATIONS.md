@@ -38,3 +38,26 @@ with real localhost HTTP requests. Deleting a Hub archive **does not
 delete previously downloaded .aglb files or invalidate site cookies**.
 Only services that issued those sessions can revoke them. See
 [CLOUD_SESSION_HANDOFF.md](CLOUD_SESSION_HANDOFF.md).
+
+## Hardened Hub quotas and archive discovery (2026-11-23)
+
+- Hub request sockets have a short inactivity timeout to bound stalled headers and
+  incomplete bodies. Protected POST/PUT endpoints authenticate before reading
+  a request body. The hub remains loopback-only.
+- The hub checks the JSON envelope keys, base64 encoding, and salt (16 bytes),
+  nonce (12 bytes), and ciphertext lengths before persisting an encrypted
+  document. **This cannot prove the ciphertext has a valid authentication tag**;
+  only a client holding the passphrase can authenticate/decrypt it.
+- Each uploader is limited to **256** session documents and **64 MiB** of stored
+  encrypted JSON, in addition to the existing team-wide 2048-document limit.
+  These quotas are defensive limits, not complete resource accounting for
+  all teams, users, or database storage.
+- Team owners and admins may list encrypted archive UUIDs using
+  `GET /teams/{team_id}/sessions` or **List team archives (admin)** in the
+  desktop Team sync tab. The listing reports complete/partial handoffs,
+  document counts, stored bytes and uploader names when known. It contains
+  no decryption keys, ciphertext or session contents.
+- Select an archive, copy its UUID and use **Revoke team archive** to delete
+  its server-side documents. Legacy archives from before the uploader-tracking
+  migration display an unknown uploader. Tombstoning does not remove already
+  downloaded copies or invalidate third-party sessions.
