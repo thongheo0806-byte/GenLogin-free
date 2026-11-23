@@ -37,3 +37,20 @@ See `RELEASE_GATES.md` for the actual acceptance contract.
   not been extracted yet**. Decomposing the class must proceed in bounded,
   independently tested steps, not as an unreviewed multi-thousand-line
   reorganization. No functional parity or EXE release follows from refactor.
+
+
+## 2026-11-23 Batch tab module and I/O isolation (development)
+
+- `autumn_genlogin/batch_tab.py` now holds the Batch pane in
+  `BatchTabMixin`, composed into `App` beside `ScheduleTabMixin`.
+  Dialogs/consent, tab state and all widgets remain Tk-main-thread only.
+- Batch start, cancellation, history retrieval and selected-batch details
+  run through `_run_ui_task` background workers. Bounded history refreshes
+  discard older out-of-order replies and preserve still-existing selection.
+  This avoids freezing Tk on batch journal SQLite or live per-batch OS lease
+  checks during crash recovery.
+- Synthetic Win32/Tk heartbeat regression deliberately blocks journal
+  listing while the GUI continues pumping callbacks. Full long-lived GUI
+  stress and independent vendor parity remain outstanding. Profiles,
+  Miniapps, Cloud, Backup and other sections still require careful,
+  separately tested extraction.
