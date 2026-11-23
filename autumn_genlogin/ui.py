@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from .schedule_tab import ScheduleTabMixin
+from .batch_tab import BatchTabMixin
 
 import json
 import threading
@@ -126,7 +127,7 @@ class ProfileEditor(tk.Toplevel):
             messagebox.showerror("Profile validation", str(exc), parent=self)
 
 
-class App(ScheduleTabMixin):
+class App(BatchTabMixin, ScheduleTabMixin):
     def __init__(self, root: tk.Tk):
         self.root = root
         self.store = Store(reuse_connections=True)
@@ -963,98 +964,6 @@ class App(ScheduleTabMixin):
                     f"{state['delivered_clicks']} follower deliveries, "
                     f"{state['failed_clicks']} failures; local {state['origin']}")
         self._run_ui_task(self.qa_sync.status,done,title="QA synchronizer")
-
-    def _build_batch_tab(self, frame):
-        ttk.Label(frame, text="Run the current workflow across a selected profile group",
-                  style="Heading.TLabel").pack(anchor="w",pady=(0,8))
-        ttk.Label(frame, text="Select a specific Group in Profiles first, then review the workflow in Automation.\n"
-                  "Each profile gets an independent run; parallelism is capped to six local browsers.\n"
-                  "This is NOT a live synchronizer. Batch history is saved locally; interrupted runs are never auto-replayed.",
-                  style="Muted.TLabel").pack(anchor="w",pady=(0,12))
-        controls = ttk.Frame(frame)
-        controls.pack(fill="x",pady=(0,10))
-        ttk.Label(controls,text="Parallel profiles:").pack(side="left")
-        self.batch_parallel=tk.StringVar(value="2")
-        ttk.Combobox(controls,values=("1","2","3","4","5","6"),
-                     textvariable=self.batch_parallel,state="readonly",width=4).pack(side="left",padx=8)
-        ttk.Button(controls,text="Start selected group",style="Accent.TButton",
-                   command=self.start_group_batch).pack(side="left",padx=8)
-        ttk.Button(controls,text="Cancel selected",command=self.cancel_group_batch).pack(side="left",padx=8)
-        ttk.Button(controls,text="Refresh",command=self.refresh_batches).pack(side="left")
-        self.batch_tree=ttk.Treeview(frame,
-            columns=("group","status","success","failed","active","queued"),
-            show="headings",height=12)
-        for column,width in (("group",155),("status",130),("success",100),
-                             ("failed",100),("active",100),("queued",100)):
-            self.batch_tree.heading(column,text=column.title())
-            self.batch_tree.column(column,width=width)
-        self.batch_tree.pack(fill="both",expand=True)
-        self.batch_details=tk.StringVar(value="Select a batch and Refresh to see individual profile states.")
-        ttk.Label(frame,textvariable=self.batch_details,style="Muted.TLabel").pack(anchor="w",pady=10)
-        self.batch_tree.bind("<<TreeviewSelect>>",lambda *_:self.show_batch_details())
-        self.refresh_batches()
-
-    def start_group_batch(self):
-        group=self.group.get()
-        if not group or group=="All groups":
-            messagebox.showwarning("Batch group","Select one specific Group in Profiles first.",parent=self.root)
-            return
-        ids=[p.id for p in self._cached_profiles if p.group_name==group]
-        if not ids:
-            messagebox.showwarning("Batch group","No profiles in the selected group.",parent=self.root)
-            return
-        try:
-            steps=self.current_steps()
-            parallel=int(self.batch_parallel.get())
-            if not messagebox.askyesno("Confirm group automation",
-                                       f"Run the current workflow on {len(ids)} profiles in group '{group}' "
-                                       f"with at most {parallel} running at once?\n\n"
-                                       "The workflow may change website data. Review it before confirming.",
-                                       parent=self.root):
-                return
-            ident=self.batches.start(ids,steps,max_parallel=parallel)
-            self.refresh_batches()
-            self.notice(f"Batch started: {ident[:8]} ({len(ids)} profiles)")
-        except Exception as exc:
-            messagebox.showerror("Batch automation",str(exc),parent=self.root)
-
-    def cancel_group_batch(self):
-        selection=self.batch_tree.selection()
-        if not selection:
-            return
-        if messagebox.askyesno("Cancel batch",
-                               "Cancel queued runs and request cancellation of active runs?\n"
-                               "A browser action already submitted to a website may still complete.",
-                               parent=self.root):
-            try:
-                self.batches.cancel(selection[0])
-                self.refresh_batches()
-            except KeyError:
-                messagebox.showinfo("Batch history",
-                    "This batch is no longer active in this app. Historical runs cannot be cancelled.",
-                    parent=self.root)
-
-    def refresh_batches(self):
-        self.batch_tree.delete(*self.batch_tree.get_children())
-        for batch in self.batches.list():
-            statuses=[item["status"] for item in batch["items"]]
-            success=statuses.count("succeeded")
-            failed=sum(s in ("failed","uncertain") for s in statuses)
-            active=sum(s in ("running","submitting") for s in statuses)
-            queued=statuses.count("queued")
-            group=f'{len(batch["items"])} profiles'
-            self.batch_tree.insert("", "end",iid=batch["id"],
-                values=(group,batch["status"],success,failed,active,queued))
-
-    def show_batch_details(self):
-        selection=self.batch_tree.selection()
-        if not selection:
-            return
-        batch=self.batches.get(selection[0])
-        detail=", ".join(f'{item["profile_id"][:8]}:{item["status"]}' for item in batch["items"][:20])
-        if len(batch["items"])>20:
-            detail+=f' (+{len(batch["items"])-20} more)'
-        self.batch_details.set(detail or "No runs")
 
     def _build_cloud_tab(self,frame):
         ttk.Label(frame, text="Opt-in encrypted team sync and manual archive handoff",style="Heading.TLabel").pack(anchor="w", pady=8)
