@@ -19,3 +19,21 @@
 7. Only then reintroduce the Windows EXE build workflow with approvals and reproducibility attestations.
 
 See `RELEASE_GATES.md` for the actual acceptance contract.
+
+
+## 2026-11-23 incremental Tk module extraction
+
+- The Scheduler pane and its dispatch callback live in
+  `autumn_genlogin/schedule_tab.py` as `ScheduleTabMixin`. The main
+  `App` continues to own Tk widgets, browser manager and its
+  `_run_ui_task` worker/completion queue. Existing public callback names
+  and scheduler transactional behavior are preserved.
+- This first extraction removes approximately 130 inline source lines
+  from `ui.py` without moving Tk calls onto background threads.
+  Dedicated architecture tests assert the inheritance contract and absence
+  of blocking `.result()` waits in the extracted module. Windows GUI
+  acceptance and regression suites must pass after refactor.
+- Remaining large tabs (Profiles, Batch, Miniapps, Cloud, Backup) **have
+  not been extracted yet**. Decomposing the class must proceed in bounded,
+  independently tested steps, not as an unreviewed multi-thousand-line
+  reorganization. No functional parity or EXE release follows from refactor.
