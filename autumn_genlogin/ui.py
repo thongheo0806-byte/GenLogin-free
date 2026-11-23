@@ -1132,8 +1132,12 @@ class App:
                    command=self.cloud_download_session).pack(side="left",padx=(0,9))
         ttk.Button(archive_row,text="Revoke team archive",
                    command=self.cloud_revoke_session).pack(side="left")
-        ttk.Button(frame,text="Resume interrupted encrypted backup upload",
-                   command=self.cloud_resume_upload_session).pack(anchor="w",pady=(1,8))
+        archive_tools=ttk.Frame(frame)
+        archive_tools.pack(fill="x",pady=(1,8))
+        ttk.Button(archive_tools,text="Resume interrupted encrypted backup upload",
+                   command=self.cloud_resume_upload_session).pack(side="left",padx=(0,12))
+        ttk.Button(archive_tools,text="List team archives (admin)",
+                   command=self.cloud_list_sessions).pack(side="left")
         self.cloud_status=tk.StringVar(value="Not signed in")
         ttk.Label(frame,textvariable=self.cloud_status).pack(anchor="w")
         ttk.Label(frame,text="Remote team roles: owner, admin, editor, viewer. Push uses revision checks to reject conflicts.",style="Muted.TLabel").pack(anchor="w",pady=8)
@@ -1241,6 +1245,48 @@ class App:
                 "to create a NEW local profile. No existing profile is overwritten.",
                 parent=self.root)
         self._cloud_action(task,finished)
+
+    def cloud_list_sessions(self):
+        """Let owners/admins discover orphan handoffs and copy revocation IDs."""
+        if not self.cloud:
+            return messagebox.showinfo("Team sync","Log in first",parent=self.root)
+        team_id=self.cloud_fields["team_id"].get().strip()
+
+        def show(items):
+            popup=tk.Toplevel(self.root)
+            popup.title("Encrypted team archives (owner/admin)")
+            popup.geometry("880x410")
+            popup.transient(self.root)
+            columns=("uuid","state","documents","bytes","uploaders")
+            table=ttk.Treeview(popup,columns=columns,show="headings",selectmode="browse")
+            for field,heading,width in (
+                ("uuid","Archive UUID",315),("state","State",90),
+                ("documents","Documents",90),("bytes","Stored bytes",110),
+                ("uploaders","Uploaders",220)
+            ):
+                table.heading(field,text=heading)
+                table.column(field,width=width,stretch=(field=="uploaders"))
+            table.pack(fill="both",expand=True,padx=8,pady=8)
+            for item in items:
+                table.insert("", "end",values=(
+                    item["session_id"],
+                    "Complete" if item["has_manifest"] else "Partial",
+                    item["documents"],item["stored_bytes"],
+                    ", ".join(item["uploaders"]) or "Legacy / unknown"
+                ))
+            def copy_uuid():
+                selected=table.selection()
+                if not selected:
+                    return
+                ident=table.item(selected[0],"values")[0]
+                self.root.clipboard_clear()
+                self.root.clipboard_append(ident)
+                self.cloud_status.set("Archive UUID copied for download or revocation")
+            ttk.Button(popup,text="Copy selected archive UUID",
+                       command=copy_uuid).pack(anchor="w",padx=8,pady=(0,8))
+            self.cloud_status.set(f"Admin archive listing: {len(items)} handoff IDs")
+
+        self._cloud_action(lambda:self.cloud.list_sessions(team_id),show)
 
     def cloud_revoke_session(self):
         if not self.cloud:
