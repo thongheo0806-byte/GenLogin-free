@@ -2,11 +2,8 @@
 # The only network-enabled model provisioning happens before the sandbox starts.
 name: Isolated AI lab real Ollama inference (NO EXE)
 on:
-  push:
-    branches: [test/ollama-real-inference-20261123]
-    paths:
-      - ".github/workflows/ai-lab-inference-proof.yml"
-      - "experiments/browser_use_lab/**"
+  # Run manually after reviewing model/image download size and CI costs.
+  # Never consume model-inference minutes on ordinary pushes or pull requests.
   workflow_dispatch:
 permissions:
   contents: read
