@@ -110,3 +110,22 @@ or permission to create EXE artifacts.**
   A real Windows Chromium integration lane still checks profile data-dir
   closure and filesystem cleanup. Deliberate crash/power-loss recovery and
   prolonged multi-process lease contention are not fully accepted.
+
+
+## 2026-11-23 read-only scheduler catalog and responsive Tk (development)
+
+- `ScheduleStore.list()` now uses a SQLite **read-only** connection. A
+  malformed persisted workflow is represented in memory as disabled/error
+  without issuing `UPDATE` during `GET /v1/schedules` or a desktop list
+  refresh. Its persisted quarantine occurs later only when the scheduler's
+  existing atomic `claim_due()` reaches the due job; no invalid workflow is
+  dispatched or silently retried.
+- Tk schedule refresh, one-time/interval creation, removal and explicitly
+  confirmed retry now send their SQLite work through background workers;
+  only the main Tk thread renders rows. Stale completed refreshes are
+  discarded, and selected rows are retained when still present.
+- A real SQLite WAL regression holds `BEGIN IMMEDIATE` during listing a
+  corrupted future workflow and proves the listing never requests a writer
+  lock. A GUI smoke regression deliberately stalls the schedule reader and
+  verifies a Tk heartbeat. These tests **do not** replace long-running
+  SQLite contention, disk-full or crash-recovery acceptance.
