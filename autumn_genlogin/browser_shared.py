@@ -558,43 +558,42 @@ class SharedBrowserManager:
 
     async def _install_recorder(self,session):
         await session.ready.wait()
-        if not session.context or session.closed.is_set(): return
-        # The runner replays actions against the FIRST page of a context.
-        # Capturing arbitrary other tabs into that workflow is misleading
-        # and could click a different element when replayed.
+        if not session.context or session.closed.is_set():
+            return
+        # Record actions across tabs using Playwright-owned frame/page sources.
+        # No URL, input value or browser data is exported into replay.
         selected = (session.context.pages[0] if session.context.pages
                     else await session.context.new_page())
         with self._lock:
             session.recorded=[]
             session.recorded_navigation_count=0
             session.recorder_page=selected
-            session.recorder_ignored_pages={id(p) for p in session.context.pages
-                                            if p is not selected}
+            session.recorder_ignored_pages=set()
             session.recorder_selected_page_closed=False
             session.recording=True
         if not session.recorder_page_hooked:
             def observe_page(page):
-                identity = id(page)
+                identity=id(page)
                 if identity in session.recorder_page_observers:
                     return
                 session.recorder_page_observers.add(identity)
                 def count_navigation():
                     with self._lock:
-                        if session.recording and page is session.recorder_page:
-                            session.recorded_navigation_count = min(
-                                session.recorded_navigation_count + 1, 1000)
+                        if session.recording:
+                            session.recorded_navigation_count=min(
+                                session.recorded_navigation_count+1,1000)
                 def closing():
                     session.recorder_page_observers.discard(identity)
                     with self._lock:
-                        if session.recording and page is session.recorder_page:
-                            session.recording=False
-                            session.recorder_selected_page_closed=True
-                page.on("domcontentloaded", lambda *_: count_navigation())
-                page.on("close", lambda *_: closing())
-                with self._lock:
-                    if session.recording and page is not session.recorder_page:
-                        session.recorder_ignored_pages.add(identity)
-            session.context.on("page", observe_page)
+                        if session.recording:
+                            session.recorder_ignored_pages.add(identity)
+                            if page is session.recorder_page:
+                                session.recorder_selected_page_closed=True
+                            if not session.context.pages:
+                                session.recording=False
+                page.on("domcontentloaded",lambda *_:count_navigation())
+                page.on("close",lambda *_:closing())
+            session.context.on("page",observe_page)
             for existing_page in session.context.pages:
                 observe_page(existing_page)
             session.recorder_page_hooked=True
@@ -602,19 +601,37 @@ class SharedBrowserManager:
             async def binding(source,payload):
                 if not session.recording:
                     return
-                # Only main-frame CSS selectors currently replay correctly.
-                # Reject iframes instead of later pretending that a selector
-                # from a nested browsing context can be used on the top page.
-                frame, page = source.get("frame"), source.get("page")
-                if frame is None or page is None or frame != page.main_frame:
+                page,frame=source.get("page"),source.get("frame")
+                if page is None or frame is None:
                     return
+                pages=list(session.context.pages)
+                if page not in pages or len(pages)>12:
+                    return
+                chain=[]
+                cursor=frame
+                try:
+                    while cursor is not page.main_frame:
+                        if len(chain)>=4 or cursor.parent_frame is None:
+                            return
+                        handle=await cursor.frame_element()
+                        selector=await handle.evaluate(FRAME_ELEMENT_SELECTOR)
+                        if not isinstance(selector,str):
+                            return
+                        chain.insert(0,selector)
+                        cursor=cursor.parent_frame
+                except Exception:
+                    # Detached frame cannot yield a stable replay target.
+                    return
+                # Only Playwright may supply these context fields; a page may
+                # call the binding directly but cannot forge the tab/frames.
+                context={"tab_index":pages.index(page),"tab_count":len(pages)}
+                if chain:
+                    context["frames"]=chain
                 with self._lock:
-                    if page is not session.recorder_page:
-                        # Content of another browser tab must never be mixed
-                        # into the first-tab replay plan.
-                        session.recorder_ignored_pages.add(id(page))
+                    if not session.recording:
                         return
-                    if not append_recorded_event(session.recorded,payload):
+                    if not append_recorded_event(session.recorded,payload,
+                                                 context=context):
                         return
                     action=session.recorded[-1]["action"]
                 self.events.put((session.profile.id,"recorded",action))
@@ -622,9 +639,15 @@ class SharedBrowserManager:
             session.binding_added=True
         await session.context.add_init_script(RECORD_SCRIPT)
         for page in session.context.pages:
-            try:await page.evaluate(RECORD_SCRIPT)
-            except Exception:pass
-        self.events.put((session.profile.id,"log","Recorder ON: text values are redacted"))
+            try:
+                for frame in page.frames:
+                    await frame.evaluate(RECORD_SCRIPT)
+            except Exception:
+                # Navigation and cross-origin iframe attachment race with
+                # instrumentation; future documents use add_init_script.
+                pass
+        self.events.put((session.profile.id,"log",
+                         "Recorder ON: tab/frame targets captured; values redacted"))
 
     def stop_recording(self,pid):
         with self._lock:
@@ -650,7 +673,7 @@ class SharedBrowserManager:
             report["selected_tab_closed"]=session.recorder_selected_page_closed
             if session.recorder_selected_page_closed:
                 report["warnings"].append(
-                    "The originally selected tab closed; re-record in the intended tab before replay."
+                    "The originally selected tab closed; review tab positions before replay."
                 )
             return report
 
