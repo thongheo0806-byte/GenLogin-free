@@ -890,8 +890,8 @@ class App:
         ttk.Label(frame,text="Local test-only click synchronizer",
                   style="Heading.TLabel").pack(anchor="w",pady=(0,8))
         ttk.Label(frame,text="Experimental local QA: clicks on specially marked "
-                  "buttons are mirrored from one open master profile to up to five "
-                  "open follower profiles in the same group.\n"
+                  "buttons are mirrored across matching tabs and local QA iframes "
+                  "from one open master to up to five followers.\n"
                   "Only the SAME http://127.0.0.1:port test origin is allowed. "
                   "No logins, real websites, field values, cookies or keyboard copying.",
                   style="Muted.TLabel").pack(anchor="w",pady=(0,14))
@@ -964,8 +964,9 @@ class App:
                 self.qa_sync_label.set("QA sync is OFF")
             else:
                 self.qa_sync_label.set(
-                    f"QA sync: {state['mirrored_clicks']} clicks mirrored, "
-                    f"{state['failed_clicks']} failed; local origin {state['origin']}")
+                    f"QA sync: {state['mirrored_clicks']} master clicks, "
+                    f"{state['delivered_clicks']} follower deliveries, "
+                    f"{state['failed_clicks']} failures; local {state['origin']}")
         self._run_ui_task(self.qa_sync.status,done,title="QA synchronizer")
 
     def _build_batch_tab(self, frame):
