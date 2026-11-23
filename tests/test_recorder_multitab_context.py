@@ -42,7 +42,7 @@ class TabFrameContextTests(unittest.TestCase):
         for patch in ({"tab_index":True},{"tab_index":-1},{"tab_index":1},
                       {"tab_count":0},{"tab_count":13},{"tab_count":True},
                       {"frames":"#frame"},{"frames":["#frame"]*5},
-                      {"frames":["#broken\\nname"]},{"frames":[""]}):
+                      {"frames":["#broken" + chr(10) + "name"]},{"frames":[""]}):
             with self.subTest(patch=patch):
                 with self.assertRaises(ValueError):
                     validated_steps([{**basic,**patch}])
