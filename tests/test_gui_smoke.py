@@ -262,5 +262,70 @@ class TkinterSmokeTests(unittest.TestCase):
                     os.environ["AUTUMN_GENLOGIN_HOME"]=previous
 
 
+    def test_cloud_pull_slow_sqlite_apply_does_not_freeze_tk(self):
+        """Full Tk heartbeat while a metadata merge holds a slow worker."""
+        import tkinter as tk
+        from types import SimpleNamespace
+        from autumn_genlogin.ui import App
+        from autumn_genlogin.models import Profile
+        from autumn_genlogin.team_sync import merge_safe_profiles as real_apply
+        with tempfile.TemporaryDirectory() as home:
+            previous=os.environ.get("AUTUMN_GENLOGIN_HOME")
+            os.environ["AUTUMN_GENLOGIN_HOME"]=home
+            root=tk.Tk()
+            root.withdraw()
+            entered=threading.Event()
+            release=threading.Event()
+            def pump(predicate,seconds=6):
+                deadline=time.monotonic()+seconds
+                while time.monotonic()<deadline:
+                    root.update()
+                    if predicate():
+                        return True
+                    time.sleep(0.01)
+                return False
+            try:
+                app=App(root)
+                source=Profile(name="Remote QA profile")
+                keys=("id","name","group_name","tags","browser","start_url",
+                      "locale","timezone_id","viewport_width","viewport_height")
+                document={"format":"AutumnGenLogin/profile-metadata-1",
+                          "profiles":[{k:getattr(source,k) for k in keys}]}
+                app.cloud=SimpleNamespace(
+                    url="http://127.0.0.1:8899",
+                    pull=lambda *args:(1,document))
+                app.cloud_fields["team_id"].set("fixture-team")
+                app.cloud_fields["passphrase"].set("synthetic team passphrase")
+                def slow(*args,**kwargs):
+                    entered.set()
+                    if not release.wait(timeout=5):
+                        raise RuntimeError("Test worker was never released")
+                    return real_apply(*args,**kwargs)
+                with (patch("autumn_genlogin.team_sync.merge_safe_profiles",
+                            side_effect=slow),
+                      patch("autumn_genlogin.ui.messagebox.askyesno",
+                            return_value=True)):
+                    app.cloud_sync("profiles","pull")
+                    self.assertTrue(pump(entered.is_set),
+                                    "Cloud apply worker was not reached")
+                    self.assertIsNone(app.store.all()[0] if app.store.all() else None)
+                    heartbeat=threading.Event()
+                    root.after(25,heartbeat.set)
+                    self.assertTrue(pump(heartbeat.is_set,seconds=1),
+                                    "Slow metadata merge blocked Tk event loop")
+                    release.set()
+                    self.assertTrue(pump(lambda:app.store.get(source.id).name==source.name),
+                                    "Worker did not install metadata")
+                    self.assertTrue(pump(lambda:bool(app.cloud_bases)),
+                                    "Tk did not accept remote baseline after apply")
+            finally:
+                release.set()
+                root.destroy()
+                if previous is None:
+                    os.environ.pop("AUTUMN_GENLOGIN_HOME",None)
+                else:
+                    os.environ["AUTUMN_GENLOGIN_HOME"]=previous
+
+
 if __name__ == "__main__":
     unittest.main()
