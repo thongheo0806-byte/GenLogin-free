@@ -95,3 +95,18 @@ or permission to create EXE artifacts.**
   contents, credentials, navigation, scroll, keyboard, cookies, session
   replication or a GenLogin/Titan-equivalent workflow. Those require separate
   threat modeling, consent, requirements and runtime acceptance.
+
+## 2026-11-23 async profile lease ownership (development)
+
+- Browser startup now owns each OS-backed profile lock in a dedicated worker
+  thread for the profile's lifetime. Both acquisition and release run on the
+  **same worker**, including Windows `msvcrt.locking`. The Playwright event
+  loop awaits an asynchronous completion signal instead of filesystem I/O.
+- A cancellation during delayed acquisition signals release even if the
+  worker acquires the lock after the coroutine has been cancelled; a completed
+  normal release awaits worker termination before reporting profile stopped.
+- Tests exercise OS lock exclusivity, shared-loop heartbeat while acquisition
+  stalls, and cancellation while a synthetic acquire remains in progress.
+  A real Windows Chromium integration lane still checks profile data-dir
+  closure and filesystem cleanup. Deliberate crash/power-loss recovery and
+  prolonged multi-process lease contention are not fully accepted.

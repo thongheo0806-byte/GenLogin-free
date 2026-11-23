@@ -20,7 +20,7 @@ from .engines import browser_options
 from .extensions import ExtensionLibrary
 from .image_actions import ImageTemplateLibrary, find_image_center
 from .graph import execute_graph, validate_graph
-from .locks import ProfileLease
+from .locks import AsyncProfileLease
 from .models import validated_steps, valid_http_url
 from .recording import append_recorded_event, review_recording
 from .secrets import get_password
@@ -217,11 +217,12 @@ class SharedBrowserManager:
 
     async def _open(self,session:Session):
         profile=session.profile;pid=profile.id
-        lease=ProfileLease(self.store.base,pid)
+        lease=AsyncProfileLease(self.store.base,pid)
         acquired=False
         password=""
         try:
-            lease.__enter__();acquired=True
+            await lease.acquire()
+            acquired=True
             # Extension catalog reads use SQLite and can block on disk locks.
             # Run outside the shared browser event loop, closing the worker's
             # thread-local connection before returning to the loop.
@@ -270,7 +271,13 @@ class SharedBrowserManager:
                 try: await session.context.close()
                 except Exception: pass
             if acquired:
-                lease.__exit__(None,None,None)
+                try:
+                    await lease.release()
+                except Exception:
+                    self.events.put((
+                        pid,"error",
+                        "Unable to verify release of profile filesystem lock",
+                    ))
             with self._lock:
                 self._sessions.pop(pid,None)
                 self._active.discard(pid)
