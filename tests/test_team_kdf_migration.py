@@ -115,7 +115,7 @@ class HubPasswordUpgradeTests(unittest.TestCase):
     def test_newly_registered_user_stores_upgraded_scrypt_factor(self):
         with tempfile.TemporaryDirectory() as home:
             hub=TeamHub(Path(home)/"fresh.sqlite3")
-            hub.register("synthetic_new","synthetic-registration-pass")
+            ident=hub.register("synthetic_new","synthetic-registration-pass")
             with closing(hub._db()) as conn:
                 row=conn.execute(
                     "SELECT password_kdf_log_n,password_hash FROM users "
@@ -123,7 +123,7 @@ class HubPasswordUpgradeTests(unittest.TestCase):
             self.assertEqual(row["password_kdf_log_n"],CURRENT_SCRYPT_LOG_N)
             self.assertEqual(len(row["password_hash"]),64)
             token=hub.login("synthetic_new","synthetic-registration-pass")
-            self.assertEqual(hub.identity(token),hub.identity(token))
+            self.assertEqual(hub.identity(token),ident)
 
 
 if __name__=="__main__":
