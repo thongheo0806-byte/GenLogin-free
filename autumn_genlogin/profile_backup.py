@@ -38,6 +38,12 @@ MAX_METADATA = 65536
 CHUNK = 1024 * 1024
 _WINDOWS_RESERVED = {"CON", "PRN", "AUX", "NUL", *[f"COM{i}" for i in range(1, 10)],
                      *[f"LPT{i}" for i in range(1, 10)]}
+# Rebuildable Chromium rendering/network caches are not portable session data.
+# Preserve Service Worker/CacheStorage, IndexedDB, Local Storage and Cookies.
+_REBUILDABLE_CACHE_DIRS = frozenset({
+    "Cache", "Code Cache", "GPUCache", "GrShaderCache",
+    "ShaderCache", "DawnCache", "GraphiteDawnCache",
+})
 
 
 def _passphrase(value: str) -> None:
@@ -80,22 +86,39 @@ def _real_files(root: Path):
         raise ValueError("Browser data path is not a directory")
     result = []
     size = 0
-    for item in root.rglob("*"):
-        info = item.lstat()
-        if stat.S_ISLNK(info.st_mode) or _reparse(item):
-            raise ValueError("Linked browser data cannot be archived safely")
-        if stat.S_ISDIR(info.st_mode):
-            continue
-        if not stat.S_ISREG(info.st_mode):
-            raise ValueError("Non-regular browser data file")
-        if info.st_size > MAX_FILE_SIZE:
-            raise ValueError("Individual browser file exceeds backup limit")
-        rel = item.relative_to(root).as_posix()
-        _name("browser/" + rel)
-        size += info.st_size
-        if size > MAX_TOTAL_SIZE or len(result) >= MAX_FILES:
-            raise ValueError("Browser profile exceeds bounded backup limits")
-        result.append((item, rel, info.st_size))
+
+    def walking_failed(exc):
+        # os.walk otherwise silently skips unreadable directories, producing
+        # a deceptively successful but incomplete session backup.
+        raise exc
+
+    for folder, directories, files in os.walk(root, topdown=True,
+                                               followlinks=False, onerror=walking_failed):
+        current = Path(folder)
+        for name in list(directories):
+            item = current / name
+            info = item.lstat()
+            if stat.S_ISLNK(info.st_mode) or _reparse(item):
+                raise ValueError("Linked browser data cannot be archived safely")
+            if not stat.S_ISDIR(info.st_mode):
+                raise ValueError("Non-directory browser data entry")
+            if name in _REBUILDABLE_CACHE_DIRS:
+                directories.remove(name)
+        for name in files:
+            item = current / name
+            info = item.lstat()
+            if stat.S_ISLNK(info.st_mode) or _reparse(item):
+                raise ValueError("Linked browser data cannot be archived safely")
+            if not stat.S_ISREG(info.st_mode):
+                raise ValueError("Non-regular browser data file")
+            if info.st_size > MAX_FILE_SIZE:
+                raise ValueError("Individual browser file exceeds backup limit")
+            rel = item.relative_to(root).as_posix()
+            _name("browser/" + rel)
+            size += info.st_size
+            if size > MAX_TOTAL_SIZE or len(result) >= MAX_FILES:
+                raise ValueError("Browser profile exceeds bounded backup limits")
+            result.append((item, rel, info.st_size))
     return sorted(result, key=lambda row: row[1])
 
 
