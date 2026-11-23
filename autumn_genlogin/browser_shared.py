@@ -77,6 +77,32 @@ RECORD_SCRIPT = r"""(() => {
   }, true);
 })();"""
 
+# Evaluate on a browser-owned iframe element, not on arbitrary captured text.
+# This returns structural CSS only, never any frame URL or form content.
+FRAME_ELEMENT_SELECTOR = r"""el => {
+  if (!el || !['IFRAME','FRAME'].includes(el.tagName)) return null;
+  const esc=s => window.CSS && CSS.escape ? CSS.escape(s) : s.replace(/[^a-zA-Z0-9_-]/g, '\\})();"""
+
+
+@dataclass
+class Session:');
+  if (el.id) return '#' + esc(el.id);
+  const test=el.getAttribute('data-testid');
+  if (test && /^[\\w-]{1,100}$/.test(test)) return '[data-testid="' + test + '"]';
+  let path=[];
+  while (el && el.tagName && path.length<6) {
+    let part=el.tagName.toLowerCase();
+    const parent=el.parentElement;
+    if (parent) {
+      const peers=Array.from(parent.children).filter(x=>x.tagName===el.tagName);
+      if (peers.length>1) part+=':nth-of-type('+(peers.indexOf(el)+1)+')';
+    }
+    path.unshift(part);
+    el=parent;
+  }
+  return path.join(' > ');
+}"""
+
 
 @dataclass
 class Session:
@@ -422,13 +448,34 @@ class SharedBrowserManager:
         context=session.context
         return context.pages[0] if context.pages else await context.new_page()
 
+    async def _dom_scope(self,session,step):
+        """Resolve a trusted recorded tab/frame chain or fail closed.
+
+        Never silently replay a second-tab action against the first tab, or
+        use a selector from an iframe in its parent document. Ordinals are
+        only a structural guard; the user must still review tab identities.
+        """
+        if "tab_index" not in step:
+            return await self._page(session)
+        pages = list(session.context.pages)
+        if len(pages) != step["tab_count"]:
+            raise RuntimeError("Recorded tab count changed; review browser tabs before replay")
+        page = pages[step["tab_index"]]
+        scope = page
+        for selector in step.get("frames", []):
+            if await scope.locator(selector).count() != 1:
+                raise RuntimeError("Recorded iframe target missing or ambiguous")
+            scope = scope.frame_locator(selector)
+        return scope
+
     async def _action(self,session,step,i):
         pid=session.profile.id
-        page=await self._page(session)
+        page=await self._page(session) if "tab_index" not in step else None
+        scope=await self._dom_scope(session,step) if "selector" in step else page
         action=step["action"]
         self.events.put((pid,"log",f"Step {i}: {action}"))
         if action=="goto":await page.goto(step["url"],wait_until="domcontentloaded",timeout=30000)
-        elif action=="click":await page.locator(step["selector"]).first.click(timeout=20000)
+        elif action=="click":await scope.locator(step["selector"]).first.click(timeout=20000)
         elif action=="click_image":
             template = self.image_templates.read(step["template_id"])
             # Keep screenshot transient. CSS scale avoids device-pixel-ratio drift.
@@ -437,13 +484,13 @@ class SharedBrowserManager:
             if session.cancel.is_set():
                 raise asyncio.CancelledError()
             await page.mouse.click(x,y)
-        elif action=="fill":await page.locator(step["selector"]).first.fill(step["text"],timeout=20000)
-        elif action=="press":await page.locator(step["selector"]).first.press(step["key"],timeout=20000)
-        elif action=="check":await page.locator(step["selector"]).first.check(timeout=20000)
-        elif action=="uncheck":await page.locator(step["selector"]).first.uncheck(timeout=20000)
-        elif action=="select_option":await page.locator(step["selector"]).first.select_option(step["value"],timeout=20000)
-        elif action=="scroll_into_view":await page.locator(step["selector"]).first.scroll_into_view_if_needed(timeout=20000)
-        elif action=="wait_for":await page.locator(step["selector"]).first.wait_for(timeout=20000)
+        elif action=="fill":await scope.locator(step["selector"]).first.fill(step["text"],timeout=20000)
+        elif action=="press":await scope.locator(step["selector"]).first.press(step["key"],timeout=20000)
+        elif action=="check":await scope.locator(step["selector"]).first.check(timeout=20000)
+        elif action=="uncheck":await scope.locator(step["selector"]).first.uncheck(timeout=20000)
+        elif action=="select_option":await scope.locator(step["selector"]).first.select_option(step["value"],timeout=20000)
+        elif action=="scroll_into_view":await scope.locator(step["selector"]).first.scroll_into_view_if_needed(timeout=20000)
+        elif action=="wait_for":await scope.locator(step["selector"]).first.wait_for(timeout=20000)
         elif action=="wait":
             remaining=step["seconds"]
             while remaining>0 and not session.cancel.is_set():
@@ -456,7 +503,7 @@ class SharedBrowserManager:
             await page.screenshot(path=str(target),full_page=True)
             self.events.put((pid,"log",f"Screenshot saved: {target}"))
         elif action=="extract_text":
-            value=await page.locator(step["selector"]).first.inner_text(timeout=20000)
+            value=await scope.locator(step["selector"]).first.inner_text(timeout=20000)
             with self._lock:
                 result=self._runs.get(pid)
                 if result and len(result["extracted"])<20:
