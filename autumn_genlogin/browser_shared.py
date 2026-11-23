@@ -190,8 +190,19 @@ class SharedBrowserManager:
         password=""
         try:
             lease.__enter__();acquired=True
-            paths=self.extensions.paths_for(pid)
-            if profile.proxy_username: password=get_password(pid) or ""
+            # Extension catalog reads use SQLite and can block on disk locks.
+            # Run outside the shared browser event loop, closing the worker's
+            # thread-local connection before returning to the loop.
+            def read_extension_paths():
+                try:
+                    return self.extensions.paths_for(pid)
+                finally:
+                    self.store.close_thread_connection()
+            paths=await asyncio.to_thread(read_extension_paths)
+            # Windows keyring may pause on credential-provider I/O. Do not
+            # suspend automation for every other open browser profile.
+            if profile.proxy_username:
+                password=await asyncio.to_thread(get_password,pid) or ""
             kind,opts=browser_options(profile,str(self.store.profile_path(pid)),headless=self.headless,
                                       extension_paths=paths,proxy_password=password)
             browser_type=getattr(self._playwright,kind)
