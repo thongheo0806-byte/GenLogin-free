@@ -65,6 +65,35 @@ class CorruptSchedulerTests(unittest.TestCase):
         self.assertEqual(jobs[good].workflow, self.workflow)
         self.assertEqual([job.id for job in self.schedules.claim_due()], [good])
 
+    def test_listing_corrupt_future_job_is_strictly_read_only(self):
+        # A corrupted future job should appear disabled in the snapshot, but
+        # merely opening a GUI/API list must never acquire a writer lock.
+        future=datetime.now(timezone.utc)+timedelta(days=1)
+        bad=self.schedules.add(self.profile_id,self.workflow,future)
+        self.corrupt(bad)
+        with self.store._connect() as locked:
+            locked.execute("BEGIN IMMEDIATE")
+            locked.execute(
+                "UPDATE schedules SET last_error=last_error WHERE id=?",
+                (bad,))
+            # WAL readers run while another writer owns BEGIN IMMEDIATE.
+            preview={job.id:job for job in self.schedules.list()}
+            self.assertEqual(preview[bad].last_status,"error")
+            self.assertEqual(preview[bad].last_error,"InvalidStoredWorkflow")
+            self.assertFalse(preview[bad].enabled)
+            row=locked.execute(
+                "SELECT enabled,last_status FROM schedules WHERE id=?",
+                (bad,)).fetchone()
+            self.assertEqual((row["enabled"],row["last_status"]),(1,"pending"))
+        # Quarantine happens in the already atomic due-claim path, not list.
+        self.assertEqual(self.schedules.claim_due(),[])
+        self.assertEqual(self.schedules.claim_due(future+timedelta(minutes=1)),[])
+        with self.store._connect() as conn:
+            row=conn.execute("SELECT enabled,last_status,last_error FROM schedules "
+                             "WHERE id=?",(bad,)).fetchone()
+            self.assertEqual((row["enabled"],row["last_status"],row["last_error"]),
+                             (0,"error","InvalidStoredWorkflow"))
+
     def test_worker_stays_alive_after_corruption_and_runs_next_job(self):
         bad, good = self.add_due(), self.add_due()
         self.corrupt(bad)
