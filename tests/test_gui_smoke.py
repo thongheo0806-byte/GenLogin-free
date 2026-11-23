@@ -380,5 +380,55 @@ class TkinterSmokeTests(unittest.TestCase):
                     os.environ["AUTUMN_GENLOGIN_HOME"]=previous
 
 
+    def test_slow_batch_history_refresh_does_not_freeze_tk(self):
+        import tkinter as tk
+        from uuid import uuid4
+        from autumn_genlogin.ui import App
+        with tempfile.TemporaryDirectory() as home:
+            previous=os.environ.get("AUTUMN_GENLOGIN_HOME")
+            os.environ["AUTUMN_GENLOGIN_HOME"]=home
+            root=tk.Tk()
+            root.withdraw()
+            entered=threading.Event()
+            release=threading.Event()
+            synthetic_id=str(uuid4())
+            def pump(predicate,seconds=6):
+                deadline=time.monotonic()+seconds
+                while time.monotonic()<deadline:
+                    root.update()
+                    if predicate():return True
+                    time.sleep(0.01)
+                return False
+            try:
+                app=App(root)
+                def stalled_history():
+                    entered.set()
+                    if not release.wait(timeout=5):
+                        raise RuntimeError("Batch history worker was not released")
+                    return [{
+                        "id":synthetic_id,"status":"succeeded",
+                        "items":[{"status":"succeeded"}],
+                    }]
+                with patch.object(app.batches,"list",side_effect=stalled_history):
+                    app.refresh_batches()
+                    self.assertTrue(pump(entered.is_set),
+                                    "Batch worker never reached journal snapshot")
+                    heartbeat=threading.Event()
+                    root.after(25,heartbeat.set)
+                    self.assertTrue(pump(heartbeat.is_set,seconds=1),
+                                    "Batch history lock blocked Tk dispatch")
+                    self.assertFalse(app.batch_tree.exists(synthetic_id))
+                    release.set()
+                    self.assertTrue(pump(lambda:app.batch_tree.exists(synthetic_id)),
+                                    "Tk did not render worker-owned history result")
+            finally:
+                release.set()
+                root.destroy()
+                if previous is None:
+                    os.environ.pop("AUTUMN_GENLOGIN_HOME",None)
+                else:
+                    os.environ["AUTUMN_GENLOGIN_HOME"]=previous
+
+
 if __name__ == "__main__":
     unittest.main()
