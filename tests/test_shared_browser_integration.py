@@ -228,6 +228,35 @@ class SharedBrowserRealTests(unittest.TestCase):
             "Master click did not propagate to both independent QA profiles")
         self.assertEqual(mirror.status()["mirrored_clicks"],1)
         self.assertEqual(mirror.status()["delivered_clicks"],2)
+
+        # Same localhost origin + same button ID does NOT prove the same
+        # application route. Follower A visits /other while B stays at /.
+        async def move_one_follower_to_wrong_route():
+            first=self.manager._sessions[profiles[1].id].context.pages[0]
+            second=self.manager._sessions[profiles[2].id].context.pages[0]
+            await first.goto(self.origin+"/other-page",wait_until="domcontentloaded")
+            await first.evaluate("delete document.body.dataset.clicked")
+            await second.evaluate("delete document.body.dataset.clicked")
+        self.manager._submit(move_one_follower_to_wrong_route()).result(timeout=15)
+        self.manager._submit(master_click()).result(timeout=15)
+        # The master gesture counter increments BEFORE follower deliveries;
+        # await the terminal accounting of every attempted follower, not the
+        # gesture count alone (otherwise this assertion races the asyncio loop).
+        self.assertTrue(eventually(
+            lambda:(state:=mirror.status()).get("mirrored_clicks")==2 and
+                    state.get("delivered_clicks",0)+state.get("failed_clicks",0)==4,
+            timeout=15))
+        self.assertEqual(mirror.status()["delivered_clicks"],3)
+        self.assertEqual(mirror.status()["failed_clicks"],1)
+        async def follower_route_results():
+            values=[]
+            for profile in profiles[1:]:
+                page=self.manager._sessions[profile.id].context.pages[0]
+                values.append(await page.evaluate("document.body.dataset.clicked==='yes'"))
+            return values
+        self.assertEqual(self.manager._submit(follower_route_results()).result(timeout=15),
+                         [False,True],
+                         "QA must not mirror a click into a different localhost route")
         mirror.stop()
         self.assertFalse(mirror.status()["active"])
         async def reset_followers():

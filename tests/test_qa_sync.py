@@ -2,7 +2,7 @@
 import unittest
 from uuid import uuid4
 
-from autumn_genlogin.qa_sync import local_origin, LocalQASynchronizer
+from autumn_genlogin.qa_sync import local_origin, same_qa_document, LocalQASynchronizer
 
 
 class LocalQAOriginTests(unittest.TestCase):
@@ -15,6 +15,25 @@ class LocalQAOriginTests(unittest.TestCase):
                     "http://user:password@127.0.0.1:4444"):
             with self.subTest(url=url),self.assertRaises(ValueError):
                 local_origin(url)
+
+    def test_qa_relay_requires_same_local_route_and_query(self):
+        master="http://127.0.0.1:5555/checkout-demo?step=1#first"
+        self.assertTrue(same_qa_document(
+            master,"http://127.0.0.1:5555/checkout-demo?step=1#second"))
+        for other in (
+            "http://127.0.0.1:5555/other-page?step=1",
+            "http://127.0.0.1:5555/checkout-demo?step=2",
+            "http://127.0.0.1:5556/checkout-demo?step=1",
+            "http://localhost:5555/checkout-demo?step=1",
+            "http://example.org:5555/checkout-demo?step=1",
+            "http://user:pass@127.0.0.1:5555/checkout-demo?step=1",
+            "about:srcdoc",
+        ):
+            with self.subTest(other=other):
+                self.assertFalse(same_qa_document(master,other))
+        self.assertTrue(same_qa_document("about:srcdoc","about:srcdoc"))
+        self.assertFalse(same_qa_document("about:srcdoc","about:blank"))
+        self.assertFalse(same_qa_document("about:blank",master))
 
     def test_rejects_missing_or_duplicate_follower_ids_before_start(self):
         class NoDriver:

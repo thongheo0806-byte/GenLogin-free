@@ -49,3 +49,22 @@ result, stops the mirror and checks future master clicks do not propagate.
 
 This still needs long-session tests, concurrency/failure injection,
 GUI keyboard and accessibility acceptance before any wider operation.
+
+## 2026-11-23 per-document live mirror safeguards
+
+- The source/master tab and every follower must represent the **same local
+  page route**, not merely the same `127.0.0.1:port` origin. Paths and query
+  strings are compared in memory; fragment-only differences are ignored.
+  Neither path nor query is saved or logged.
+- For nested iframes, each follower's matching DOM iframe must resolve to an
+  actual Frame with the same local route or identical special document
+  `about:srcdoc` / `about:blank`. A follower iframe navigated to a foreign
+  origin, another route or an ambiguous selector causes a **failed delivery**,
+  never a guessed click.
+- A synthetic real-Chromium test exercises two followers where one navigates
+  to another localhost route with the same visible QA button ID. Only the
+  still-matching follower may receive the next click.
+- This is a safety boundary for **local QA pages only**. It is not full
+  keyboard/text/navigation mirroring, site-account synchronization or
+  GenLogin/Titan parity. Human-confirmed website-specific consent, trusted
+  event provenance and stronger page identity checks remain separate work.
