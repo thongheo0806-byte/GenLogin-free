@@ -109,3 +109,20 @@ Only services that issued those sessions can revoke them. See
   A conflict requires operator review and a new pull; previously downloaded
   sessions are not touched. Workflows still require explicit document-level
   review and are never merged field-by-field.
+
+## 2026-11-23 nonblocking desktop cloud metadata processing
+
+- The **Push metadata** snapshot and second local-consistency check run
+  on a worker thread, not the Tk event loop. A local edit after the preview
+  is rejected before an attempted server-side compare-and-swap upload.
+- **Pull metadata** downloads, SQLite snapshot reading, structural
+  three-way merge and the final `BEGIN IMMEDIATE` SQLite transaction all
+  run on background workers. Tk only presents confirmation/status and
+  updates its widgets after worker completion. The final store write still
+  compares the approved local snapshot atomically with current metadata.
+- The GUI drops responses for a changed logged-in Cloud client, team scope
+  or accepted remote baseline, avoiding an unrelated reply updating the
+  current team's baseline. No automatic retry, forced overwrite or replay.
+- A Windows Tk heartbeat regression deliberately stalls cloud SQLite
+  work and verifies the UI keeps dispatching callbacks. This does **not**
+  establish complete DB/GUI load testing for very large profile catalogs.
