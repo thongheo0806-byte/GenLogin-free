@@ -158,6 +158,10 @@ class App:
         self._build()
         self.refresh()
         self._ui_destroyed = False
+        self._quitting = False
+        self._driver_shutdown_started = False
+        self._driver_shutdown_failed = False
+        self._shutdown_after = None
         self._poll_after = self.root.after(150, self.poll_events)
         self.root.protocol("WM_DELETE_WINDOW", self.on_quit)
         self.root.bind("<Destroy>", self._root_destroyed, add="+")
@@ -1696,7 +1700,8 @@ class App:
         if event.widget is self.root:
             self._ui_destroyed=True
             for ident in (getattr(self,"_poll_after",None),
-                          getattr(self,"_search_after",None)):
+                          getattr(self,"_search_after",None),
+                          getattr(self,"_shutdown_after",None)):
                 if ident:
                     try:
                         self.root.after_cancel(ident)
@@ -1708,25 +1713,57 @@ class App:
             self.store.close_thread_connection()
 
     def on_quit(self):
+        if self._quitting:
+            return  # repeated window-close clicks cannot start duplicate shutdowns
+        self._quitting = True
         self._shutdown_deadline = time.monotonic() + 8.0
         self.batches.cancel_all()
         self.scheduler.stop()
         self.manager.stop_all()
-        # shutdown API on a thread so the UI cannot freeze during shutdown
+        # The local API can take time to stop; never do this on the Tk thread.
         if self.api.server:
-            import threading
-            threading.Thread(target=self.api.stop, daemon=True).start()
-        self.root.after(100, self._exit_when_stopped)
+            threading.Thread(target=self.api.stop, daemon=True,
+                             name="autumn-api-shutdown").start()
+        self._shutdown_after = self.root.after(100, self._exit_when_stopped)
 
     def _exit_when_stopped(self):
-        if self.manager.count() and time.monotonic() < self._shutdown_deadline:
-            self.status.set("Closing browser sessions...")
-            self.root.after(200, self._exit_when_stopped)
-        elif self.manager.count():
-            # Never block shutdown permanently, but do not pretend resources
-            # were cleaned: daemon workers exit with the application process.
+        if self._ui_destroyed:
+            return
+        self._shutdown_after = None
+        if self.manager.count():
+            if time.monotonic() < self._shutdown_deadline:
+                self.status.set("Closing browser sessions...")
+                self._shutdown_after = self.root.after(200, self._exit_when_stopped)
+                return
+            # A timed-out context may still hold files. Do not claim a clean
+            # shutdown or call close_driver while contexts are alive.
+            self.status.set("Shutdown incomplete: browser sessions still open")
             self.store.close_thread_connection()
             self.root.destroy()
-        else:
+            return
+        if not self._driver_shutdown_started:
+            self._driver_shutdown_started = True
+            self._driver_shutdown_deadline = time.monotonic() + 38.0
+            self.status.set("Closing shared Playwright driver...")
+
+            def completed(_result):
+                self.store.close_thread_connection()
+                self.root.destroy()
+
+            def failed(_message):
+                self._driver_shutdown_failed = True
+                self.status.set("Shared Playwright driver did not close cleanly")
+                self.store.close_thread_connection()
+                self.root.destroy()
+
+            self._run_ui_task(self.manager.close_driver, completed,
+                              title="Browser shutdown", failed=failed)
+        elif time.monotonic() >= self._driver_shutdown_deadline:
+            # close_driver itself has bounded waits. If something violates
+            # those bounds, do not trap Tk in an infinite shutdown loop.
+            self._driver_shutdown_failed = True
+            self.status.set("Shared Playwright driver shutdown timed out")
             self.store.close_thread_connection()
             self.root.destroy()
+            return
+        self._shutdown_after = self.root.after(200, self._exit_when_stopped)
