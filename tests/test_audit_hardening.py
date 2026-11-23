@@ -10,6 +10,7 @@ import tempfile
 import threading
 import time
 import unittest
+from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
@@ -180,6 +181,16 @@ class TeamHubHardeningTests(unittest.TestCase):
             thread.join(timeout=5)
         self.assertFalse(thread.is_alive())
 
+    def test_unauthorized_put_does_not_wait_for_body(self):
+        with socket.create_connection(("127.0.0.1", self.server.server_port), timeout=3) as sock:
+            sock.settimeout(3)
+            sock.sendall(
+                b"PUT /teams/fake/documents/profiles HTTP/1.1\r\n"
+                b"Host: localhost\r\nContent-Length: 100000\r\n"
+                b"Authorization: Bearer invalid\r\n\r\n"
+            )
+            self.assertIn(b"401", sock.recv(4096).split(b"\r\n", 1)[0])
+
     def test_migrates_old_document_table_without_losing_rows(self):
         legacy_path = self.root / "old.sqlite3"
         with sqlite3.connect(legacy_path) as conn:
@@ -190,7 +201,7 @@ class TeamHubHardeningTests(unittest.TestCase):
             conn.execute("INSERT INTO documents VALUES(?,?,?,?)",
                          ("old-team", "profiles", 1, '{"format":"legacy"}'))
         upgraded = TeamHub(legacy_path)
-        with upgraded._db() as conn:
+        with closing(upgraded._db()) as conn:
             columns = [row["name"] for row in conn.execute("PRAGMA table_info(documents)")]
             self.assertIn("creator_id", columns)
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0], 1)
