@@ -11,7 +11,6 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 
 from .cloud_sessions import CloudSessionHandoff
 from .team_sync import CloudClient, safe_profile_metadata
-from .models import validated_steps
 
 
 class CloudTabMixin:
@@ -441,13 +440,7 @@ class CloudTabMixin:
                     try:
                         if doc.get("format")!="AutumnGenLogin/workflow-1":
                             raise ValueError("Wrong workflow format")
-                        flow=doc["workflow"]
-                        if isinstance(flow,dict):
-                            self.graph_builder.set_graph(flow)
-                            self.flow_tabs.select(2)
-                        else:
-                            self.builder.set_steps(validated_steps(flow))
-                            self.flow_tabs.select(0)
+                        self.load_workflow_draft(doc["workflow"])
                         self.cloud_status.set("Downloaded workflow")
                         accepted()
                     except Exception as exc:

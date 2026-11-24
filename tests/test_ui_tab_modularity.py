@@ -5,6 +5,8 @@ import unittest
 from autumn_genlogin.schedule_tab import ScheduleTabMixin
 from autumn_genlogin.batch_tab import BatchTabMixin
 from autumn_genlogin.ui import App
+from autumn_genlogin.qa_sync_tab import QASyncTabMixin
+from autumn_genlogin.miniapp_tab import MiniappTabMixin
 from autumn_genlogin.cloud_tab import CloudTabMixin
 
 
@@ -60,6 +62,27 @@ class ExtractedScheduleTabTests(unittest.TestCase):
         self.assertIn("self._run_ui_task",source)
         self.assertNotIn(".result(timeout=",source)
         self.assertNotIn("self.store._connect",source)
+
+    def test_qa_and_miniapp_controllers_own_their_callbacks(self):
+        for mixin, handlers in (
+            (QASyncTabMixin, ("_build_qa_sync_tab", "start_qa_sync",
+                              "stop_qa_sync", "refresh_qa_sync")),
+            (MiniappTabMixin, ("_build_miniapp_tab", "import_miniapp",
+                "preview_miniapp", "load_miniapp", "remove_miniapp",
+                "refresh_miniapps", "trust_miniapp_publisher")),
+        ):
+            self.assertTrue(issubclass(App,mixin))
+            for handler in handlers:
+                self.assertIn(handler,mixin.__dict__)
+                self.assertNotIn(handler,App.__dict__)
+            source=inspect.getsource(mixin)
+            self.assertNotIn(".result(timeout=",source)
+            self.assertNotIn("self.store._connect",source)
+            self.assertNotIn("self.builder",source)
+            self.assertNotIn("self.flow_tabs",source)
+        self.assertIn("self.load_workflow_draft",
+                      inspect.getsource(MiniappTabMixin))
+
 
 
 if __name__ == "__main__":
