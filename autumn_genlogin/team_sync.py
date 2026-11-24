@@ -47,6 +47,7 @@ ENVELOPE_FIELDS = frozenset({"format", "salt", "nonce", "ciphertext"})
 MAX_MEMBER_SESSION_DOCUMENTS = 256
 MAX_MEMBER_SESSION_BYTES = 64 * 1024 * 1024
 REQUEST_IO_TIMEOUT = 2.0
+MAX_HTTP_HANDLERS = 32
 ROLE_LEVEL = {"viewer":0, "editor":1,"admin":2,"owner":3}
 # Whitelist immutable, opaque session-archive parts and the final manifest.
 # No arbitrary document names, paths, query strings or token-like values.
@@ -56,8 +57,8 @@ _SESSION_NAME = re.compile(
 
 
 def _allowed_document_name(name: str) -> bool:
-    return name in {"profiles","workflows"} or (
-        isinstance(name,str) and bool(_SESSION_NAME.fullmatch(name))
+    return isinstance(name,str) and (
+        name in {"profiles","workflows"} or bool(_SESSION_NAME.fullmatch(name))
     )
 
 
@@ -206,6 +207,15 @@ class TeamHub:
             if "password_kdf_log_n" not in user_columns:
                 c.execute("ALTER TABLE users ADD COLUMN password_kdf_log_n "
                           "INTEGER NOT NULL DEFAULT 14")
+            # Derive archive IDs from immutable document names. An expression
+            # index stays correct even if an older Hub inserts a legacy row;
+            # no duplicated session_id column or backfill can drift.
+            c.execute("CREATE INDEX IF NOT EXISTS documents_session_lookup_idx "
+                      "ON documents(team_id,substr(name,9,36),name) "
+                      "WHERE substr(name,1,8)='session-'")
+            c.execute("CREATE INDEX IF NOT EXISTS documents_session_creator_idx "
+                      "ON documents(team_id,creator_id) "
+                      "WHERE substr(name,1,8)='session-'")
             c.commit()
 
     def _db(self):
@@ -220,6 +230,10 @@ class TeamHub:
             raise HubError(400,"Invalid username")
         if not isinstance(password,str) or len(password)<12 or len(password)>256:
             raise HubError(400,"Password must be 12-256 characters")
+        try:
+            password.encode("utf-8")
+        except UnicodeError:
+            raise HubError(400,"Invalid password encoding") from None
         ident=str(uuid4());salt=secrets.token_bytes(16)
         with _auth_slot():
             digest=_scrypt_key(password, salt, log_n=CURRENT_SCRYPT_LOG_N, dklen=64)
@@ -238,6 +252,11 @@ class TeamHub:
         if (not isinstance(username,str) or not 3<=len(username)<=40
                 or not isinstance(password,str) or len(password)>256):
             raise HubError(401,"Invalid credentials")
+        try:
+            username.encode("utf-8")
+            password.encode("utf-8")
+        except UnicodeError:
+            raise HubError(401,"Invalid credentials") from None
         with closing(self._db()) as c:
             row=c.execute("SELECT * FROM users WHERE username=?",(username,)).fetchone()
         log_n=row["password_kdf_log_n"] if row is not None else None
@@ -371,9 +390,21 @@ class TeamHub:
                     (team_id,actor)).fetchone()
                 if current is None or ROLE_LEVEL[current["role"]] < ROLE_LEVEL["editor"]:
                     raise HubError(403,"Team access denied")
-                row=c.execute("SELECT revision FROM documents WHERE team_id=? AND name=?",(team_id,name)).fetchone()
+                row=c.execute("SELECT revision,blob FROM documents WHERE team_id=? AND name=?",(team_id,name)).fetchone()
                 actual=row["revision"] if row else 0
                 if actual != revision: raise HubError(409,"Revision conflict; pull before overwriting")
+                # Preserve legacy reads but never let an old writer replace an
+                # upgraded mutable document with a weaker encryption envelope.
+                if row is not None and name in {"profiles","workflows"}:
+                    try:
+                        previous=json.loads(row["blob"])
+                        previous_factor,_=_envelope_kdf(previous)
+                    except (ValueError,TypeError,KeyError):
+                        raise HubError(409,"Existing document envelope is invalid; restore or review it first") from None
+                    new_factor,_=_envelope_kdf(blob)
+                    if (new_factor < previous_factor or
+                            ("kdf" in previous and "kdf" not in blob)):
+                        raise HubError(409,"KDF downgrade refused; upgrade the sync client before publishing")
                 # Session parts/manifests are immutable; a writer cannot
                 # rewrite an already-published encrypted backup.
                 match=_SESSION_NAME.fullmatch(name) if name.startswith("session-") else None
@@ -385,14 +416,14 @@ class TeamHub:
                     raise HubError(409,"Published session archive documents are immutable")
                 if name.startswith("session-"):
                     count=c.execute(
-                        "SELECT COUNT(*) FROM documents WHERE team_id=? AND name LIKE 'session-%'",
+                        "SELECT COUNT(*) FROM documents WHERE team_id=? AND substr(name,1,8)='session-'",
                         (team_id,)).fetchone()[0]
                     if count>=2048:
                         raise HubError(413,"Team archive storage quota exceeded")
                     owned=c.execute(
                         "SELECT COUNT(*) AS documents,COALESCE(SUM(LENGTH(blob)),0) AS bytes "
                         "FROM documents WHERE team_id=? AND creator_id=? "
-                        "AND name LIKE 'session-%'", (team_id,actor)).fetchone()
+                        "AND substr(name,1,8)='session-'", (team_id,actor)).fetchone()
                     if (owned["documents"]>=MAX_MEMBER_SESSION_DOCUMENTS or
                             owned["bytes"]+len(raw.encode("utf-8"))>MAX_MEMBER_SESSION_BYTES):
                         raise HubError(413,"Member archive storage quota exceeded")
@@ -414,7 +445,7 @@ class TeamHub:
             rows=c.execute(
                 "SELECT d.name,LENGTH(d.blob) AS bytes,u.username "
                 "FROM documents d LEFT JOIN users u ON u.id=d.creator_id "
-                "WHERE d.team_id=? AND d.name LIKE 'session-%' ORDER BY d.name",
+                "WHERE d.team_id=? AND substr(d.name,1,8)='session-' ORDER BY substr(d.name,9,36),d.name",
                 (team_id,)).fetchall()
         sessions={}
         for row in rows:
@@ -460,8 +491,10 @@ class TeamHub:
                 c.execute("INSERT OR IGNORE INTO revoked_sessions VALUES(?,?,?)",
                           (team_id,canonical,time.time()))
                 removed=c.execute(
-                    "DELETE FROM documents WHERE team_id=? AND name LIKE ?",
-                    (team_id,"session-"+canonical+"-%")).rowcount
+                    "DELETE FROM documents WHERE team_id=? "
+                    "AND substr(name,1,8)='session-' "
+                    "AND substr(name,9,36)=? AND substr(name,45,1)='-'",
+                    (team_id,canonical)).rowcount
                 c.commit()
             except BaseException:
                 c.rollback()
@@ -479,7 +512,26 @@ class HubHTTPServer(ThreadingHTTPServer):
         if host not in {"127.0.0.1","::1","localhost"}:
             raise ValueError("Only loopback binding is permitted; use a TLS reverse proxy")
         self.hub=hub
+        self._handler_slots=threading.BoundedSemaphore(MAX_HTTP_HANDLERS)
         super().__init__(address,HubHandler)
+
+    def process_request(self,request,client_address):
+        # Bound threads BEFORE spawning a handler. Saturated unparsed TCP
+        # connections are closed; no blocking response on the accept thread.
+        if not self._handler_slots.acquire(blocking=False):
+            self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request,client_address)
+        except BaseException:
+            self._handler_slots.release()
+            raise
+
+    def process_request_thread(self,request,client_address):
+        try:
+            super().process_request_thread(request,client_address)
+        finally:
+            self._handler_slots.release()
 
 
 class HubHandler(BaseHTTPRequestHandler):
@@ -629,7 +681,12 @@ class CloudClient:
         return result["revision"], (decrypt_document(result["blob"],passphrase) if result["blob"] else None)
     def push(self,team_id,name,revision,document,passphrase):
         blob=encrypt_document(document,passphrase)
-        return self.request("PUT",f"/teams/{team_id}/documents/{name}",{"revision":revision,"blob":blob})["revision"]
+        try:
+            return self.request("PUT",f"/teams/{team_id}/documents/{name}",{"revision":revision,"blob":blob})["revision"]
+        except HubError as exc:
+            if exc.status==400 and exc.message=="Invalid encrypted document envelope":
+                raise HubError(400,"Hub rejected the versioned encryption envelope; upgrade Hub and team clients. No legacy downgrade was attempted.") from None
+            raise
 
 
 def merge_safe_profiles(store,document:dict,*,active=lambda _:False,
