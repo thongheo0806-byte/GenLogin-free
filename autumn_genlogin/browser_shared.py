@@ -281,8 +281,7 @@ class SharedBrowserManager:
             page=context.pages[0] if context.pages else await context.new_page()
             try: await page.goto(profile.start_url,wait_until="domcontentloaded",timeout=30000)
             except Exception as exc:
-                from playwright._impl._errors import TargetClosedError
-                if isinstance(exc,TargetClosedError) or session.closed.is_set(): return
+                if self._is_target_closed(exc) or session.closed.is_set(): return
                 self.events.put((pid,"log","Start URL unavailable: "+self._error(exc,password)))
             session.ready.set()
             self.events.put((pid,"status","Running"))
@@ -759,6 +758,12 @@ class SharedBrowserManager:
                     "The originally selected tab closed; review tab positions before replay."
                 )
             return report
+
+    @staticmethod
+    def _is_target_closed(exc):
+        """Only Playwright's concrete exception denotes a closed target."""
+        from playwright._impl._errors import TargetClosedError
+        return isinstance(exc, TargetClosedError)
 
     @staticmethod
     def _error(exc,secret):
