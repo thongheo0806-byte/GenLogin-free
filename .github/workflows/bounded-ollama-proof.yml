@@ -1,0 +1,91 @@
+# EXPERIMENT ONLY. This workflow does not create EXE/release artifacts.
+# The only network-enabled model provisioning happens before the sandbox starts.
+name: Bounded Ollama planner real browser proof (NO EXE)
+on:
+  # One explicitly scoped internal acceptance PR, then manual dispatch only.
+  # Ordinary PRs and pushes never run the model job.
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'experiments/browser_use_lab/bounded_planner.py'
+      - '.github/workflows/bounded-ollama-proof.yml'
+permissions:
+  contents: read
+
+jobs:
+  real-ollama-proof:
+    if: github.event_name == 'workflow_dispatch' || (github.head_ref == 'test/isolated-ollama-bounded-planner-20261124' && github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      AUTUMN_LAB_OLLAMA_IMAGE: "ollama/ollama:0.40.17"
+      # The 0.5B model proved inference but hallucinated the fixture click.
+      # Test a stronger small CPU model; actual click evidence remains required.
+      AUTUMN_LAB_MODEL: "qwen2.5:1.5b"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Confirm Docker and isolated-network support
+        run: |
+          docker version
+          docker compose version
+          df -h .
+      - name: Provision a disposable public model BEFORE isolated runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/autumn-model-only"
+          echo "AUTUMN_LAB_OLLAMA_MODELS=$RUNNER_TEMP/autumn-model-only/models" >> "$GITHUB_ENV"
+          docker run --detach --name autumn-ollama-provision \
+            --publish 127.0.0.1:11557:11434 \
+            --volume "$RUNNER_TEMP/autumn-model-only:/root/.ollama" \
+            "$AUTUMN_LAB_OLLAMA_IMAGE" > /dev/null
+          for attempt in $(seq 1 45); do
+            if docker exec autumn-ollama-provision ollama list >/dev/null 2>&1; then
+              break
+            fi
+            sleep 2
+          done
+          docker exec autumn-ollama-provision ollama list >/dev/null
+          docker exec autumn-ollama-provision ollama pull "$AUTUMN_LAB_MODEL"
+          docker rm --force autumn-ollama-provision >/dev/null
+          test -d "$RUNNER_TEMP/autumn-model-only/models/blobs"
+          test -d "$RUNNER_TEMP/autumn-model-only/models/manifests"
+          docker image inspect "$AUTUMN_LAB_OLLAMA_IMAGE" --format '{{join .RepoDigests ","}}'
+      - name: Validate the restricted Compose contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker compose -f experiments/browser_use_lab/compose.yaml config --format json |
+            python -m experiments.browser_use_lab.check_compose
+      - name: Prove model inference inside internal-only Docker network
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker compose -f experiments/browser_use_lab/compose.yaml up -d --wait ollama
+          docker compose -f experiments/browser_use_lab/compose.yaml exec -T ollama ollama list
+          response="$(timeout 180 docker compose -f experiments/browser_use_lab/compose.yaml \
+            exec -T ollama ollama run "$AUTUMN_LAB_MODEL" \
+            'Respond with only the exact phrase AUTUMN_LAB_INFERENCE_OK.')"
+          if [[ "$response" != *"AUTUMN_LAB_INFERENCE_OK"* ]]; then
+            echo "::error::Real model did not return the synthetic verification marker"
+            exit 1
+          fi
+          echo "REAL_OLLAMA_INFERENCE_VERIFIED: isolated network, synthetic prompt"
+      - name: Execute bounded model choices and real Chromium clicks
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker compose -f experiments/browser_use_lab/compose.yaml \
+            run --build --rm agent python -m experiments.browser_use_lab.bounded_planner
+      - name: Always destroy experimental containers and model data
+        if: always()
+        shell: bash
+        run: |
+          docker rm --force autumn-ollama-provision 2>/dev/null || true
+          docker compose -f experiments/browser_use_lab/compose.yaml down --volumes --remove-orphans 2>/dev/null || true
+          # Model files are written as container root during bootstrap.
+          # The workspace is a fixed disposable GitHub-hosted runner path.
+          sudo rm -rf -- "$RUNNER_TEMP/autumn-model-only"
