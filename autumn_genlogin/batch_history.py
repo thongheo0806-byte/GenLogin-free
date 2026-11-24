@@ -77,8 +77,7 @@ class BatchJournal:
     def save(self, batch: dict) -> None:
         safe = self._sanitized(batch)
         payload = json.dumps(safe, separators=(",", ":"),ensure_ascii=True)
-        with self.store.transaction() as conn:
-            conn.execute("BEGIN IMMEDIATE")
+        with self.store.write_transaction() as conn:
             exists = conn.execute("SELECT 1 FROM batch_history WHERE id=?",
                                   (safe["id"],)).fetchone()
             if exists is None:
@@ -113,8 +112,7 @@ class BatchJournal:
         try:
             with ProfileLease(self.store.base,snapshot["id"]):
                 # Re-read after acquiring the lock, before mutating the row.
-                with self.store.transaction() as conn:
-                    conn.execute("BEGIN IMMEDIATE")
+                with self.store.write_transaction() as conn:
                     row = conn.execute("SELECT snapshot_json FROM batch_history WHERE id=?",
                                        (snapshot["id"],)).fetchone()
                     if row is None:
