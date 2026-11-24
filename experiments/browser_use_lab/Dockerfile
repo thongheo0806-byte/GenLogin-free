@@ -7,11 +7,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libnss3 libatk-bridge2.0-0 libgtk-3-0 libasound2 \
     && rm -rf /var/lib/apt/lists/*
 
-RUN python -m pip install --no-cache-dir "browser-use==1.0.7"
+RUN python -m pip install --no-cache-dir "browser-use==1.0.7" "playwright==1.53.0"
 RUN useradd --uid 10001 --home-dir /home/lab --create-home lab
 
 WORKDIR /opt/autumn
-COPY __init__.py agent.py policy.py /opt/autumn/experiments/browser_use_lab/
+COPY __init__.py agent.py policy.py bounded_planner.py /opt/autumn/experiments/browser_use_lab/
 ENV PYTHONPATH=/opt/autumn \
     HOME=/tmp/lab-home \
     XDG_CACHE_HOME=/tmp/lab-cache \
