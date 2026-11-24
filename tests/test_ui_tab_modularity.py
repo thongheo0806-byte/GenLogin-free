@@ -5,6 +5,8 @@ import unittest
 from autumn_genlogin.schedule_tab import ScheduleTabMixin
 from autumn_genlogin.batch_tab import BatchTabMixin
 from autumn_genlogin.ui import App
+from autumn_genlogin.backup_tab import BackupTabMixin
+from autumn_genlogin.extension_tab import ExtensionTabMixin
 from autumn_genlogin.qa_sync_tab import QASyncTabMixin
 from autumn_genlogin.miniapp_tab import MiniappTabMixin
 from autumn_genlogin.cloud_tab import CloudTabMixin
@@ -82,6 +84,28 @@ class ExtractedScheduleTabTests(unittest.TestCase):
             self.assertNotIn("self.flow_tabs",source)
         self.assertIn("self.load_workflow_draft",
                       inspect.getsource(MiniappTabMixin))
+
+
+    def test_backup_and_extension_controllers_own_their_callbacks(self):
+        for mixin, handlers in (
+            (BackupTabMixin, ("backup_profile", "restore_profile",
+                              "export_profiles", "import_profiles")),
+            (ExtensionTabMixin, ("_build_extensions_tab", "refresh_extensions",
+                "install_extension_folder", "install_extension_zip",
+                "update_extension_zip", "rollback_extension_update",
+                "attach_extension", "detach_extension", "remove_extension")),
+        ):
+            self.assertTrue(issubclass(App,mixin))
+            for handler in handlers:
+                self.assertIn(handler,mixin.__dict__)
+                self.assertNotIn(handler,App.__dict__)
+            source=inspect.getsource(mixin)
+            self.assertNotIn(".result(timeout=",source)
+            self.assertNotIn("self.store._connect",source)
+            self.assertNotIn("self.builder",source)
+            self.assertNotIn("self.flow_tabs",source)
+            self.assertNotIn("self.tree",source)
+        self.assertIn("self._run_ui_task",inspect.getsource(BackupTabMixin))
 
 
 

@@ -6,6 +6,8 @@ from .batch_tab import BatchTabMixin
 from .cloud_tab import CloudTabMixin
 from .miniapp_tab import MiniappTabMixin
 from .qa_sync_tab import QASyncTabMixin
+from .backup_tab import BackupTabMixin
+from .extension_tab import ExtensionTabMixin
 
 import json
 import threading
@@ -130,7 +132,8 @@ class ProfileEditor(tk.Toplevel):
             messagebox.showerror("Profile validation", str(exc), parent=self)
 
 
-class App(QASyncTabMixin, MiniappTabMixin, CloudTabMixin, BatchTabMixin, ScheduleTabMixin):
+class App(BackupTabMixin, ExtensionTabMixin, QASyncTabMixin, MiniappTabMixin,
+          CloudTabMixin, BatchTabMixin, ScheduleTabMixin):
     def __init__(self, root: tk.Tk):
         self.root = root
         self.store = Store(reuse_connections=True)
@@ -281,25 +284,7 @@ class App(QASyncTabMixin, MiniappTabMixin, CloudTabMixin, BatchTabMixin, Schedul
         self.graph_builder = GraphEditor(graph_panel)
         self.graph_builder.pack(fill="both", expand=True)
         self.flow_tabs.bind("<<NotebookTabChanged>>", self._sync_workflow_tabs)
-        # Extensions are never downloaded automatically and never executed on install.
-        extension_header = ttk.Frame(extensions_tab)
-        extension_header.pack(fill="x", pady=(0, 12))
-        ttk.Label(extension_header, text="Locally installed Manifest V3 extensions", style="Heading.TLabel").pack(side="left")
-        for title, cmd in (("Add folder", self.install_extension_folder), ("Add ZIP", self.install_extension_zip),
-                           ("Update ZIP", self.update_extension_zip), ("Rollback update", self.rollback_extension_update),
-                           ("Attach to selected profile", self.attach_extension), ("Detach", self.detach_extension),
-                           ("Remove", self.remove_extension)):
-            ttk.Button(extension_header, text=title, command=cmd).pack(side="right", padx=(7, 0))
-        ttk.Label(extensions_tab, text="Only Playwright Chromium supports sideloaded extensions. Select a profile in Profiles first. Review permissions before enabling.",
-                  style="Muted.TLabel").pack(anchor="w", pady=(0, 10))
-        self.extension_tree = ttk.Treeview(extensions_tab, columns=("name", "version", "permissions", "attached"), show="headings")
-        for column, width in (("name", 280), ("version", 110), ("permissions", 470), ("attached", 120)):
-            self.extension_tree.heading(column, text=column.title())
-            self.extension_tree.column(column, width=width, stretch=column in ("name", "permissions"))
-        self.extension_tree.pack(fill="both", expand=True)
-        self.extension_tree.bind("<Double-1>", lambda *_: self.extension_details())
-        ttk.Button(extensions_tab, text="View permissions", command=self.extension_details).pack(anchor="e", pady=(10, 0))
-        self.refresh_extensions()
+        self._build_extensions_tab(extensions_tab)
         self._build_schedule_tab(schedule_tab)
         self._build_batch_tab(batch_tab)
         self._build_qa_sync_tab(qa_tab)
@@ -446,91 +431,6 @@ class App(QASyncTabMixin, MiniappTabMixin, CloudTabMixin, BatchTabMixin, Schedul
         messagebox.showinfo("AutumnGenLogin diagnostics",
                             "\n".join(lines) + "\n\n" + str(summary), parent=self.root)
         self.notice(f"Diagnostics: {summary['failed']} failures, {summary['warnings']} warnings")
-
-    def backup_profile(self):
-        pid = self.selected_id()
-        if not pid:
-            return
-        if self.manager.active(pid):
-            messagebox.showwarning("Encrypted profile backup",
-                                   "Close this browser profile before backing up its session.",
-                                   parent=self.root)
-            return
-        if not messagebox.askyesno("Sensitive browser-data backup",
-                                   "The encrypted backup contains browser cookies, sessions and local storage.\n"
-                                   "It intentionally excludes OS vault passwords and installed extension packages.\n\n"
-                                   "Keep the passphrase private. Lost passphrases cannot be recovered. Continue?",
-                                   parent=self.root):
-            return
-        target = filedialog.asksaveasfilename(title="Save encrypted profile backup",
-                        defaultextension=".aglb", filetypes=[("Autumn encrypted backup","*.aglb")])
-        if not target:
-            return
-        secret = simpledialog.askstring("Encrypt profile",
-                        "Enter a strong passphrase (12+ characters):", show="*",parent=self.root)
-        if secret is None:
-            return
-        check = simpledialog.askstring("Confirm passphrase",
-                        "Re-enter the backup passphrase:", show="*",parent=self.root)
-        if secret != check:
-            messagebox.showerror("Encrypted backup","Passphrases do not match.",parent=self.root)
-            return
-        self._run_ui_task(
-            lambda:export_encrypted_profile(self.store,pid,Path(target),secret),
-            lambda count:self.notice(f"Encrypted profile backup saved ({count} files)"),
-            title="Encrypted backup",
-        )
-
-    def restore_profile(self):
-        source = filedialog.askopenfilename(title="Restore encrypted profile backup",
-                        filetypes=[("Autumn encrypted backup","*.aglb")])
-        if not source:
-            return
-        if not messagebox.askyesno("Restore sensitive profile data",
-                                   "Restore browser data as a NEW local profile?\n"
-                                   "Existing profiles will not be overwritten.\n"
-                                   "Proxy passwords and extension packages are NOT restored.",
-                                   parent=self.root):
-            return
-        secret = simpledialog.askstring("Decrypt profile",
-                        "Enter the backup passphrase:", show="*",parent=self.root)
-        if secret is None:
-            return
-        def done(profile):
-            self.refresh()
-            self.notice("Restored encrypted profile: "+profile.name)
-            messagebox.showinfo("Profile restored",
-                "Restored a NEW profile. Reconfigure proxy passwords and "
-                "review browser compatibility before launching it.",
-                parent=self.root)
-        self._run_ui_task(
-            lambda:restore_encrypted_profile(self.store,Path(source),secret),
-            done,title="Restore backup",
-        )
-
-    def export_profiles(self):
-        path=filedialog.asksaveasfilename(
-            defaultextension=".json",filetypes=[("JSON","*.json")],
-            initialfile="autumn-profiles.json")
-        if path:
-            self._run_ui_task(
-                lambda:self.store.export_metadata(Path(path)),
-                lambda count:self.notice(
-                    f"Exported {count} metadata records (no passwords/cookies)"),
-                title="Export metadata",
-            )
-
-    def import_profiles(self):
-        path=filedialog.askopenfilename(filetypes=[("JSON","*.json")])
-        if path:
-            def done(count):
-                self.refresh()
-                self.notice(
-                    f"Imported {count} profiles (fresh IDs and empty sessions)")
-            self._run_ui_task(
-                lambda:self.store.import_metadata(Path(path)),
-                done,title="Import metadata",
-            )
 
     def _sync_workflow_tabs(self, _event=None):
         # Switching back after invalid JSON emits a second Tk event: guard it
@@ -707,173 +607,6 @@ class App(QASyncTabMixin, MiniappTabMixin, CloudTabMixin, BatchTabMixin, Schedul
             self.notice(f"Imported {len(steps)} reviewed structural steps; verify placeholders before replay")
         except (TypeError, ValueError) as exc:
             messagebox.showerror("Recorder", str(exc), parent=self.root)
-
-    def refresh_extensions(self):
-        if not hasattr(self, "extension_tree"):
-            return
-        self.extension_tree.delete(*self.extension_tree.get_children())
-        profile_id = self.selected_id(False) if hasattr(self, "tree") else None
-        attached = set(self.extensions.attached_ids(profile_id)) if profile_id else set()
-        for item in self.extensions.list():
-            permissions = ", ".join([*item.permissions, *item.host_permissions])
-            self.extension_tree.insert("", "end", iid=item.id,
-                                       values=(item.name, item.version, permissions[:150], "Yes" if item.id in attached else "No"))
-
-    def selected_extension(self):
-        selection = self.extension_tree.selection()
-        if not selection:
-            messagebox.showinfo("Extensions", "Select an extension first", parent=self.root)
-            return None
-        return next((e for e in self.extensions.list() if e.id == selection[0]), None)
-
-    def install_extension_folder(self):
-        source = filedialog.askdirectory(title="Choose an unpacked Manifest V3 extension")
-        if source:
-            self._install_extension(Path(source), archive=False)
-
-    def install_extension_zip(self):
-        source = filedialog.askopenfilename(title="Choose a Manifest V3 extension archive", filetypes=[("ZIP", "*.zip")])
-        if source:
-            self._install_extension(Path(source), archive=True)
-
-    def _install_extension(self, path: Path, archive: bool):
-        if not messagebox.askyesno("Untrusted extension warning",
-                                   "Browser extensions can read and modify web pages, including private data.\n"
-                                   "Only install extensions that you trust and have reviewed. Continue?", parent=self.root):
-            return
-        try:
-            record = self.extensions.install_zip(path) if archive else self.extensions.install_folder(path)
-            self.refresh_extensions()
-            self.notice(f"Imported {record.name}, not enabled on any profile")
-            messagebox.showinfo("Extension imported (not enabled)",
-                                f"Name: {record.name}\nVersion: {record.version}\n"
-                                f"Permissions: {', '.join(record.permissions) or '(none)'}\n"
-                                f"Hosts: {', '.join(record.host_permissions) or '(none)'}\n\n"
-                                "Use Attach to allow this extension in a selected Chromium profile.", parent=self.root)
-        except Exception as exc:
-            messagebox.showerror("Install extension", str(exc), parent=self.root)
-
-    def update_extension_zip(self):
-        old = self.selected_extension()
-        if not old:
-            return
-        path = filedialog.askopenfilename(title="Choose a reviewed newer MV3 extension package",
-                            filetypes=[("ZIP archive","*.zip")])
-        if not path:
-            return
-        candidate = None
-        try:
-            candidate = self.extensions.prepare_update(old.id,Path(path),archive=True)
-            additional_api = sorted(set(candidate.permissions) - set(old.permissions))
-            additional_host = sorted(set(candidate.host_permissions) - set(old.host_permissions))
-            if not messagebox.askyesno("Review extension update permissions",
-                                       f"Update {old.name} from {old.version} to {candidate.version}?\n"
-                                       "Review source trust: same extension name is NOT a developer signature.\n\n"
-                                       f"NEW API permissions: {', '.join(additional_api) or '(none)'}\n"
-                                       f"NEW host access: {', '.join(additional_host) or '(none)'}\n\n"
-                                       "Affected profiles must all be stopped. "
-                                       "The old package is retained for rollback.",
-                                       parent=self.root):
-                self.extensions.remove(candidate.id)
-                return
-            update = self.extensions.apply_update(old.id,candidate.id)
-            self.refresh_extensions()
-            self.notice(f"Updated {old.name} on {len(update.profile_ids)} stopped profiles")
-            messagebox.showinfo("Extension updated",
-                                f"New version imported: {candidate.version}\n"
-                                "Restart affected profiles to load the new package.\n"
-                                "Keep the old package if rollback may be necessary.",
-                                parent=self.root)
-        except Exception as exc:
-            if candidate:
-                try:
-                    self.extensions.remove(candidate.id)
-                except (ValueError, KeyError, OSError):
-                    pass
-            messagebox.showerror("Update extension",str(exc),parent=self.root)
-
-    def rollback_extension_update(self):
-        record = self.selected_extension()
-        if not record:
-            return
-        updates = [u for u in self.extensions.list_upgrades()
-                   if u.new_id == record.id and u.status == "applied"]
-        if not updates:
-            return messagebox.showinfo("Rollback",
-                        "Select a newer extension package with an active update record.",
-                        parent=self.root)
-        latest = updates[0]
-        previous = next((p for p in self.extensions.list() if p.id == latest.old_id), None)
-        if previous is None:
-            return messagebox.showerror("Rollback","Previous extension version is missing.",parent=self.root)
-        if not messagebox.askyesno("Rollback extension",
-                                   f"Restore {record.name} from {record.version} to {previous.version} "
-                                   f"on {len(latest.profile_ids)} affected profiles?\n\n"
-                                   "All affected browsers must be stopped. Current website actions "
-                                   "cannot be undone. Restart profiles after rollback.",
-                                   parent=self.root):
-            return
-        try:
-            self.extensions.rollback_update(latest.id)
-            self.refresh_extensions()
-            self.notice(f"Rolled back {record.name} to {previous.version}")
-        except Exception as exc:
-            messagebox.showerror("Rollback extension",str(exc),parent=self.root)
-
-    def extension_details(self):
-        record = self.selected_extension()
-        if record:
-            messagebox.showinfo("Extension permissions",
-                                f"{record.name} (v{record.version})\n\n"
-                                f"API permissions: {', '.join(record.permissions) or '(none)'}\n"
-                                f"Host permissions: {', '.join(record.host_permissions) or '(none)'}\n\n"
-                                "Imported extension source is not audited or automatically updated.", parent=self.root)
-
-    def attach_extension(self):
-        record, pid = self.selected_extension(), self.selected_id()
-        if not record or not pid:
-            return
-        if self.manager.active(pid):
-            messagebox.showwarning("Profile running", "Stop this profile before modifying extensions")
-            return
-        if not messagebox.askyesno("Grant extension access",
-                                   f"Enable {record.name} for this browser profile?\n\n"
-                                   f"API permissions: {', '.join(record.permissions) or '(none)'}\n"
-                                   f"Host permissions: {', '.join(record.host_permissions) or '(none)'}\n\n"
-                                   "Extensions can observe page content.", parent=self.root):
-            return
-        try:
-            self.extensions.attach(pid, record.id)
-            self.refresh_extensions()
-            self.notice(f"Attached extension {record.name}; restart the profile to load")
-        except Exception as exc:
-            messagebox.showerror("Attach extension", str(exc), parent=self.root)
-
-    def detach_extension(self):
-        record, pid = self.selected_extension(), self.selected_id()
-        if not record or not pid:
-            return
-        if self.manager.active(pid):
-            messagebox.showwarning("Profile running", "Stop the profile before detaching extensions")
-            return
-        self.extensions.detach(pid, record.id)
-        self.refresh_extensions()
-        self.notice(f"Detached {record.name}")
-
-    def remove_extension(self):
-        record = self.selected_extension()
-        if not record:
-            return
-        if any(self.manager.active(p.id) and record.id in self.extensions.attached_ids(p.id) for p in self.store.all()):
-            messagebox.showwarning("Extension active", "Stop attached browser profiles first")
-            return
-        if messagebox.askyesno("Remove extension", f"Delete local files for {record.name}?", parent=self.root):
-            try:
-                self.extensions.remove(record.id)
-                self.refresh_extensions()
-                self.notice(f"Removed {record.name}")
-            except Exception as exc:
-                messagebox.showerror("Remove extension", str(exc), parent=self.root)
 
     def toggle_api(self):
         try:
