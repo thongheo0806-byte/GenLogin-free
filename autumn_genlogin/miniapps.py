@@ -136,8 +136,7 @@ class MiniAppLibrary:
         """User explicitly pins a 32-byte Ed25519 public key after review."""
         label=_field("publisher label",label,80)
         fingerprint=publisher_fingerprint(public_key)
-        with self.store.transaction() as conn:
-            conn.execute("BEGIN IMMEDIATE")
+        with self.store.write_transaction() as conn:
             row=conn.execute("SELECT public_key FROM miniapp_publishers WHERE fingerprint=?",
                              (fingerprint,)).fetchone()
             if row is not None and row["public_key"]!=public_key:
@@ -194,8 +193,7 @@ class MiniAppLibrary:
             raise ValueError("Miniapp manifest exceeds 64 KiB")
         ident=hashlib.sha256(raw.encode("utf-8")).hexdigest()
         now=datetime.now(timezone.utc).isoformat(timespec="seconds")
-        with self.store.transaction() as conn:
-            conn.execute("BEGIN IMMEDIATE")
+        with self.store.write_transaction() as conn:
             existing_signature=None
             pin=conn.execute(
                 "SELECT fingerprint FROM miniapp_name_pins WHERE name=?",

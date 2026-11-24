@@ -24,7 +24,9 @@ class SchedulerPollTests(unittest.TestCase):
 
     def test_idle_poll_never_requests_immediate_write_transaction(self):
         commands = []
-        with self.store._connect() as conn:
+        with self.store.read() as conn:
+            conn.set_trace_callback(commands.append)
+        with self.store.transaction() as conn:
             conn.set_trace_callback(commands.append)
         try:
             for _ in range(8):
@@ -39,7 +41,9 @@ class SchedulerPollTests(unittest.TestCase):
             self.assertEqual([j.id for j in self.schedules.claim_due()], [job])
             self.assertTrue(any("BEGIN IMMEDIATE" in q.upper() for q in commands))
         finally:
-            with self.store._connect() as conn:
+            with self.store.read() as conn:
+                conn.set_trace_callback(None)
+            with self.store.transaction() as conn:
                 conn.set_trace_callback(None)
 
     def test_concurrent_claims_submit_same_one_shot_only_once(self):

@@ -62,6 +62,22 @@ class TeamHTTPTests(unittest.TestCase):
         self.assertFalse(self.thread.is_alive(), "Team hub listener did not exit")
         self.tmp.cleanup()
 
+    def test_hub_write_transaction_rolls_back_and_releases_writer(self):
+        hub=self.server.hub
+        with self.assertRaisesRegex(RuntimeError, "rollback fixture"):
+            with hub.write_transaction() as conn:
+                self.assertTrue(conn.in_transaction)
+                conn.execute("INSERT INTO teams VALUES (?,?)", ("fixture", "temporary"))
+                raise RuntimeError("rollback fixture")
+        with hub.write_transaction() as conn:
+            self.assertIsNone(conn.execute(
+                "SELECT id FROM teams WHERE id=?", ("fixture",)).fetchone())
+            conn.execute("INSERT INTO teams VALUES (?,?)", ("fixture", "committed"))
+        with closing(hub._db()) as conn:
+            self.assertEqual(conn.execute(
+                "SELECT name FROM teams WHERE id=?", ("fixture",)).fetchone()[0],
+                "committed")
+
     def test_roles_conflicts_and_encrypted_document(self):
         alice=CloudClient(self.base)
         bob=CloudClient(self.base)

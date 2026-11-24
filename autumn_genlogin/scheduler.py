@@ -150,19 +150,15 @@ class ScheduleStore:
         now_s = iso(now)
         limit = max(1, min(20, limit))
         claimed=[]
-        with self.store.transaction() as c:
-            # The scheduler polls once per second. Avoid an EXCLUSIVE writer
-            # reservation during idle periods so GUI/API writes are not
-            # needlessly queued behind a job-free polling transaction.
+        # A read-only fast path avoids acquiring a writer reservation on
+        # idle polls. Recheck due rows inside the immediate write transaction.
+        with self.store.read() as c:
             if c.execute(
                 "SELECT 1 FROM schedules WHERE enabled=1 AND next_run_utc<=? LIMIT 1",
                 (now_s,),
             ).fetchone() is None:
                 return claimed
-            # A concurrent scheduler may have claimed the row since the
-            # optimistic read. Recheck inside the write transaction to
-            # preserve exactly-once claims across processes and threads.
-            c.execute("BEGIN IMMEDIATE")
+        with self.store.write_transaction() as c:
             rows = c.execute("SELECT * FROM schedules WHERE enabled=1 AND next_run_utc<=? ORDER BY next_run_utc LIMIT ?",
                              (now_s, limit)).fetchall()
             for r in rows:
@@ -250,8 +246,7 @@ class ScheduleStore:
         if status not in {"succeeded","failed","cancelled"}:
             raise ValueError("Nonterminal browser run status")
         kind = self._safe_error(error) if error else ""
-        with self.store.transaction() as c:
-            c.execute("BEGIN IMMEDIATE")
+        with self.store.write_transaction() as c:
             row = c.execute("SELECT job_id,status FROM schedule_runs WHERE id=?", (str(UUID(dispatch_id)),)).fetchone()
             if not row or row["status"] not in {"submitted","dispatch_pending"}:
                 return
@@ -270,8 +265,7 @@ class ScheduleStore:
         """
         job_id = str(UUID(job_id))
         next_run = iso(now or utcnow())
-        with self.store.transaction() as c:
-            c.execute("BEGIN IMMEDIATE")
+        with self.store.write_transaction() as c:
             row = c.execute("SELECT enabled,interval_seconds,last_status FROM schedules WHERE id=?",
                             (job_id,)).fetchone()
             if row is None:

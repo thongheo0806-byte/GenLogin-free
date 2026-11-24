@@ -103,3 +103,18 @@
 - Regression tests confirm reads refuse writes, a successful transaction
   commits, and an exceptional transaction rolls back. Public access does not
   imply arbitrary plugins are authorized to mutate the database.
+
+
+## 2026-11-24 explicit writer contexts
+
+`Store.write_transaction()` and the independent `TeamHub.write_transaction()`
+own BEGIN IMMEDIATE and commit/rollback. The scheduler keeps a truly read-only
+idle preflight, and rechecks rows after acquiring the writer reservation.
+Batch history, extension updates, Miniapp registration and cloud profile
+application use the explicit desktop writer context. Hub member updates,
+revision writes and archive revocation use its independent writer context.
+Callers must not manually commit or nest write contexts on reused connections.
+Tests cover rollback, writer reservation, subsequent reuse and existing
+race/revision contracts. The ordinary `transaction()` method remains for
+backward compatibility and non-immediate operations. Ruff F401/E402/I
+checks begin with locks.py; other legacy modules are not yet lint-clean.

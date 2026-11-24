@@ -251,8 +251,7 @@ class ExtensionLibrary:
         with ExitStack() as leases:
             for pid in ids:
                 leases.enter_context(ProfileLease(self.store.base, pid))
-            with self.store.transaction() as conn:
-                conn.execute("BEGIN IMMEDIATE")
+            with self.store.write_transaction() as conn:
                 found = [r[0] for r in conn.execute(
                     "SELECT profile_id FROM profile_extensions WHERE extension_id=? ORDER BY profile_id",
                     (old.id,))]
@@ -289,8 +288,7 @@ class ExtensionLibrary:
         with ExitStack() as leases:
             for pid in sorted(ids):
                 leases.enter_context(ProfileLease(self.store.base, pid))
-            with self.store.transaction() as conn:
-                conn.execute("BEGIN IMMEDIATE")
+            with self.store.write_transaction() as conn:
                 fresh = conn.execute("SELECT status FROM extension_upgrades WHERE id=?",
                                      (upgrade_id,)).fetchone()
                 if fresh is None or fresh["status"] != "applied":
