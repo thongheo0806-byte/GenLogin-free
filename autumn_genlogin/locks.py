@@ -5,6 +5,8 @@ unlinking while a process holds a lock could create two independent locks.
 """
 from __future__ import annotations
 
+import asyncio
+import concurrent.futures
 import os
 import threading
 from pathlib import Path
@@ -71,8 +73,6 @@ class AsyncProfileLease:
     """
 
     def __init__(self, home: Path, profile_id: str):
-        import concurrent.futures
-        import threading
         self.home, self.profile_id = Path(home), str(UUID(profile_id))
         self._ready = concurrent.futures.Future()
         self._done = concurrent.futures.Future()
@@ -94,7 +94,6 @@ class AsyncProfileLease:
             self._done.set_result(None)
 
     async def acquire(self):
-        import asyncio
         with self._start_lock:
             if self._thread is not None:
                 raise RuntimeError("Profile lease already started")
@@ -113,7 +112,6 @@ class AsyncProfileLease:
         return self
 
     async def release(self):
-        import asyncio
         self._release.set()
         thread = self._thread
         if thread is None:
