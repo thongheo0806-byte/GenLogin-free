@@ -25,6 +25,10 @@ FIXTURE = b"""<!doctype html><meta charset="utf-8">
 <script>
 document.querySelector('#verify').addEventListener('click', () => {
     document.querySelector('#result').textContent = 'TEST-OK';
+    // The localhost-only fixture records an actual browser click signal.
+    // A model merely repeating the expected text is not enough evidence.
+    fetch('/verified', {method: 'POST', headers: {'Content-Type':'text/plain'},
+                        body:'TEST-OK'}).catch(() => {});
 });
 </script>
 """
@@ -42,6 +46,21 @@ class FixtureHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(FIXTURE)
 
+    def do_POST(self):
+        if self.path != "/verified" or self.headers.get("Content-Type") != "text/plain":
+            self.send_error(404)
+            return
+        try:
+            size = int(self.headers.get("Content-Length", "-1"))
+        except ValueError:
+            size = -1
+        if size != len(b"TEST-OK") or self.rfile.read(size) != b"TEST-OK":
+            self.send_error(400)
+            return
+        self.server.verified_click.set()
+        self.send_response(204)
+        self.end_headers()
+
     def log_message(self, *_):
         pass
 
@@ -49,6 +68,7 @@ class FixtureHandler(BaseHTTPRequestHandler):
 def run_demo(config, *, agent_type, browser_type, llm_type) -> bool:
     """Use dependency injection so unit tests cannot accidentally start an AI."""
     server = ThreadingHTTPServer(("127.0.0.1", 0), FixtureHandler)
+    server.verified_click = threading.Event()
     worker = threading.Thread(target=server.serve_forever, daemon=True,
                               name="autumn-ai-lab-only-fixture")
     worker.start()
@@ -70,7 +90,14 @@ def run_demo(config, *, agent_type, browser_type, llm_type) -> bool:
             result = agent.run_sync(max_steps=config.max_steps,
                                     timeout=config.timeout_seconds)
             outcome = result.final_result()
-            return isinstance(outcome, str) and "TEST-OK" in outcome
+            clicked = server.verified_click.wait(timeout=2)
+            reported = isinstance(outcome, str) and "TEST-OK" in outcome
+            # Only synthetic booleans leave the ephemeral agent container.
+            # No model response, URL, page text or credentials are logged.
+            print(json.dumps({"experiment":"synthetic-gesture-evidence",
+                              "button_clicked":clicked,
+                              "model_report_marker":reported}))
+            return clicked and reported
     finally:
         server.shutdown()
         server.server_close()
