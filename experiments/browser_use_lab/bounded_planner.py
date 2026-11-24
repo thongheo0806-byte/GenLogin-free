@@ -11,7 +11,7 @@ import json
 import os
 import secrets
 import threading
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from urllib.request import Request, build_opener, ProxyHandler, HTTPRedirectHandler
 
@@ -136,14 +136,15 @@ def run_trial(model: str, *, choose=model_choice) -> bool:
         def log_message(self, *_):
             pass
 
-    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    server = HTTPServer(("127.0.0.1", 0), Handler)
     worker = threading.Thread(target=server.serve_forever, daemon=True)
     worker.start()
     try:
         origin = f"http://127.0.0.1:{server.server_port}"
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch(
-                executable_path="/usr/bin/chromium", headless=True)
+                executable_path="/usr/bin/chromium", headless=True,
+                args=["--renderer-process-limit=2"])
             try:
                 context = browser.new_context()
                 context.route("**/*", lambda route:
@@ -162,8 +163,12 @@ def run_trial(model: str, *, choose=model_choice) -> bool:
                 locator = page.locator(f'button[data-choice="{choice}"]')
                 if locator.count() != 1:
                     return False
-                locator.click(timeout=5000)
-                return (verified.wait(3) and choice == correct
+                with page.expect_response(
+                        lambda reply: reply.url == origin + "/verified",
+                        timeout=8000) as response:
+                    locator.click(timeout=5000)
+                return (response.value.status == 204 and verified.is_set()
+                        and choice == correct
                         and page.locator("#result").inner_text(timeout=5000) == correct)
             finally:
                 browser.close()
