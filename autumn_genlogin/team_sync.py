@@ -19,7 +19,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from contextlib import closing
+from contextlib import closing, contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -35,6 +35,12 @@ MAX_SCRYPT_LOG_N = 17
 SCRYPT_MAXMEM = 256 * 1024 * 1024
 SCRYPT_R = 8
 SCRYPT_P = 1
+# Shared across Hub instances in this process; fail fast instead of queuing
+# unbounded request threads behind memory-hard authentication work.
+AUTH_KDF_SLOTS = 4
+_AUTH_SLOTS = threading.BoundedSemaphore(AUTH_KDF_SLOTS)
+_DUMMY_AUTH_SALT = secrets.token_bytes(16)
+_DUMMY_AUTH_DIGEST = bytes(64)
 ENVELOPE_FIELDS = frozenset({"format", "salt", "nonce", "ciphertext"})
 
 # Bound damage by a single compromised editor even if team-wide quota remains.
@@ -71,6 +77,16 @@ def _scrypt_key(secret: str, salt: bytes, *, log_n: int,
     return hashlib.scrypt(
         secret.encode("utf-8"), salt=salt, n=1 << log_n,
         r=SCRYPT_R, p=SCRYPT_P, dklen=dklen, maxmem=SCRYPT_MAXMEM)
+
+
+@contextmanager
+def _auth_slot():
+    if not _AUTH_SLOTS.acquire(blocking=False):
+        raise HubError(503, "Authentication temporarily busy; retry later")
+    try:
+        yield
+    finally:
+        _AUTH_SLOTS.release()
 
 
 def _envelope_kdf(blob: object) -> tuple[int, bytes]:
@@ -205,7 +221,8 @@ class TeamHub:
         if not isinstance(password,str) or len(password)<12 or len(password)>256:
             raise HubError(400,"Password must be 12-256 characters")
         ident=str(uuid4());salt=secrets.token_bytes(16)
-        digest=_scrypt_key(password, salt, log_n=CURRENT_SCRYPT_LOG_N, dklen=64)
+        with _auth_slot():
+            digest=_scrypt_key(password, salt, log_n=CURRENT_SCRYPT_LOG_N, dklen=64)
         try:
             with closing(self._db()) as c:
                 with c:
@@ -217,31 +234,46 @@ class TeamHub:
         return ident
 
     def login(self,username:str,password:str) -> str:
-        if not isinstance(username,str) or not isinstance(password,str):
+        # Reject malformed/oversized inputs independent of account existence.
+        if (not isinstance(username,str) or not 3<=len(username)<=40
+                or not isinstance(password,str) or len(password)>256):
             raise HubError(401,"Invalid credentials")
         with closing(self._db()) as c:
             row=c.execute("SELECT * FROM users WHERE username=?",(username,)).fetchone()
-        try:
-            log_n=row["password_kdf_log_n"] if row is not None else None
-            valid=(row is not None and type(log_n) is int
-                   and LEGACY_SCRYPT_LOG_N <= log_n <= MAX_SCRYPT_LOG_N
-                   and hmac.compare_digest(
-                       _scrypt_key(password,row["salt"],log_n=log_n,dklen=64),
-                       row["password_hash"]))
-        except (ValueError,TypeError):
-            valid=False
-        if not valid:
-            raise HubError(401,"Invalid credentials")
+        log_n=row["password_kdf_log_n"] if row is not None else None
+        usable=(row is not None and type(log_n) is int
+                and LEGACY_SCRYPT_LOG_N <= log_n <= MAX_SCRYPT_LOG_N
+                and isinstance(row["salt"],bytes) and len(row["salt"])==16
+                and isinstance(row["password_hash"],bytes)
+                and len(row["password_hash"])==64)
+        with _auth_slot():
+            # Unknown accounts perform the same current-cost derivation and
+            # constant-time digest comparison as current registered accounts.
+            factor=log_n if usable else CURRENT_SCRYPT_LOG_N
+            salt=row["salt"] if usable else _DUMMY_AUTH_SALT
+            expected=row["password_hash"] if usable else _DUMMY_AUTH_DIGEST
+            candidate=_scrypt_key(password,salt,log_n=factor,dklen=64)
+            matches=hmac.compare_digest(candidate,expected)
+            valid=usable and matches
+            if usable and log_n==LEGACY_SCRYPT_LOG_N:
+                # Two legacy derivations approximate the current work factor.
+                # This reduces, but cannot mathematically eliminate, timing
+                # differences across legacy and current KDFs or DB caches.
+                _scrypt_key(password,_DUMMY_AUTH_SALT,
+                            log_n=LEGACY_SCRYPT_LOG_N,dklen=64)
+            if not valid:
+                raise HubError(401,"Invalid credentials")
+            new_salt=upgraded=None
+            if log_n<CURRENT_SCRYPT_LOG_N:
+                new_salt=secrets.token_bytes(16)
+                upgraded=_scrypt_key(password,new_salt,
+                                     log_n=CURRENT_SCRYPT_LOG_N,dklen=64)
         token=secrets.token_urlsafe(32)
         with closing(self._db()) as c:
             with c:
-                if log_n < CURRENT_SCRYPT_LOG_N:
-                    # Upgrade *only after successful authentication*. CAS on
-                    # the previous hash prevents losing another login's
-                    # concurrent upgrade. A legacy user keeps the same ID.
-                    new_salt=secrets.token_bytes(16)
-                    upgraded=_scrypt_key(password,new_salt,
-                                         log_n=CURRENT_SCRYPT_LOG_N,dklen=64)
+                if upgraded is not None:
+                    # KDF computation finished before acquiring a DB writer
+                    # lock. CAS preserves concurrent upgrades.
                     c.execute(
                         "UPDATE users SET salt=?,password_hash=?,password_kdf_log_n=? "
                         "WHERE id=? AND salt=? AND password_hash=? "
