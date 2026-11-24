@@ -54,3 +54,11 @@ See `RELEASE_GATES.md` for the actual acceptance contract.
   stress and independent vendor parity remain outstanding. Profiles,
   Miniapps, Cloud, Backup and other sections still require careful,
   separately tested extraction.
+
+## 2026-11-24 Cloud tab extraction
+
+CloudTabMixin now owns the Team Hub panel, metadata review, and manual encrypted
+archive handoff callbacks. The same App worker bridge and consent prompts are
+retained; this is a behavior-preserving extraction, not automatic session sync.
+Existing Windows GUI tests remain the acceptance gate. Other tabs still need
+separate extraction and review.
