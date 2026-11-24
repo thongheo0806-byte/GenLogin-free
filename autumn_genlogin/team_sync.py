@@ -225,6 +225,14 @@ class TeamHub:
         c.execute("PRAGMA busy_timeout=10000")
         return c
 
+    @contextmanager
+    def write_transaction(self):
+        """Reserve and release the independent Hub database writer."""
+        with closing(self._db()) as conn:
+            with conn:
+                conn.execute("BEGIN IMMEDIATE")
+                yield conn
+
     def register(self,username:str,password:str) -> str:
         if not isinstance(username,str) or not 3<=len(username)<=40 or not username.isascii() or not all(x.isalnum() or x in "_-" for x in username):
             raise HubError(400,"Invalid username")
@@ -339,8 +347,7 @@ class TeamHub:
         if role not in {"viewer","editor","admin"}: raise HubError(400,"Invalid role")
         if actor_role!="owner" and role=="admin":
             raise HubError(403,"Only team owner may appoint administrators")
-        with closing(self._db()) as c:
-            c.execute("BEGIN IMMEDIATE")
+        with self.write_transaction() as c:
             row=c.execute("SELECT id FROM users WHERE username=?",(username,)).fetchone()
             if row is None: raise HubError(404,"User does not exist")
             existing=c.execute("SELECT role FROM members WHERE team_id=? AND user_id=?",(team_id,row["id"])).fetchone()
@@ -353,7 +360,6 @@ class TeamHub:
                 raise HubError(403,"Only the owner may manage administrators")
             c.execute("INSERT INTO members VALUES(?,?,?) ON CONFLICT(team_id,user_id) DO UPDATE SET role=excluded.role",
                       (team_id,row["id"],role))
-            c.commit()
 
     def members(self,actor:str,team_id:str)->list[dict]:
         self.require(actor,team_id)
@@ -382,59 +388,55 @@ class TeamHub:
         raw=json.dumps(blob,separators=(",",":"))
         if len(raw.encode("utf-8"))>MAX_DOCUMENT: raise HubError(413,"Document too large")
         # BEGIN IMMEDIATE serializes competing updates, including distinct HTTP threads.
-        with closing(self._db()) as c:
-            c.execute("BEGIN IMMEDIATE")
-            try:
-                current=c.execute(
-                    "SELECT role FROM members WHERE team_id=? AND user_id=?",
-                    (team_id,actor)).fetchone()
-                if current is None or ROLE_LEVEL[current["role"]] < ROLE_LEVEL["editor"]:
-                    raise HubError(403,"Team access denied")
-                row=c.execute("SELECT revision,blob FROM documents WHERE team_id=? AND name=?",(team_id,name)).fetchone()
-                actual=row["revision"] if row else 0
-                if actual != revision: raise HubError(409,"Revision conflict; pull before overwriting")
-                # Preserve legacy reads but never let an old writer replace an
-                # upgraded mutable document with a weaker encryption envelope.
-                if row is not None and name in {"profiles","workflows"}:
-                    try:
-                        previous=json.loads(row["blob"])
-                        previous_factor,_=_envelope_kdf(previous)
-                    except (ValueError,TypeError,KeyError):
-                        raise HubError(409,"Existing document envelope is invalid; restore or review it first") from None
-                    new_factor,_=_envelope_kdf(blob)
-                    if (new_factor < previous_factor or
-                            ("kdf" in previous and "kdf" not in blob)):
-                        raise HubError(409,"KDF downgrade refused; upgrade the sync client before publishing")
-                # Session parts/manifests are immutable; a writer cannot
-                # rewrite an already-published encrypted backup.
-                match=_SESSION_NAME.fullmatch(name) if name.startswith("session-") else None
-                if match and c.execute(
-                    "SELECT 1 FROM revoked_sessions WHERE team_id=? AND session_id=?",
-                    (team_id,match.group(1))).fetchone():
-                    raise HubError(410,"Encrypted session handoff revoked")
-                if name.startswith("session-") and row is not None:
-                    raise HubError(409,"Published session archive documents are immutable")
-                if name.startswith("session-"):
-                    count=c.execute(
-                        "SELECT COUNT(*) FROM documents WHERE team_id=? AND substr(name,1,8)='session-'",
-                        (team_id,)).fetchone()[0]
-                    if count>=2048:
-                        raise HubError(413,"Team archive storage quota exceeded")
-                    owned=c.execute(
-                        "SELECT COUNT(*) AS documents,COALESCE(SUM(LENGTH(blob)),0) AS bytes "
-                        "FROM documents WHERE team_id=? AND creator_id=? "
-                        "AND substr(name,1,8)='session-'", (team_id,actor)).fetchone()
-                    if (owned["documents"]>=MAX_MEMBER_SESSION_DOCUMENTS or
-                            owned["bytes"]+len(raw.encode("utf-8"))>MAX_MEMBER_SESSION_BYTES):
-                        raise HubError(413,"Member archive storage quota exceeded")
-                c.execute(
-                    "INSERT INTO documents(team_id,name,revision,blob,creator_id) "
-                    "VALUES(?,?,?,?,?) ON CONFLICT(team_id,name) "
-                    "DO UPDATE SET revision=excluded.revision,blob=excluded.blob",
-                    (team_id,name,actual+1,raw,actor))
-                c.commit()
-            except BaseException:
-                c.rollback();raise
+        with self.write_transaction() as c:
+            current=c.execute(
+                "SELECT role FROM members WHERE team_id=? AND user_id=?",
+                (team_id,actor)).fetchone()
+            if current is None or ROLE_LEVEL[current["role"]] < ROLE_LEVEL["editor"]:
+                raise HubError(403,"Team access denied")
+            row=c.execute("SELECT revision,blob FROM documents WHERE team_id=? AND name=?",(team_id,name)).fetchone()
+            actual=row["revision"] if row else 0
+            if actual != revision: raise HubError(409,"Revision conflict; pull before overwriting")
+            # Preserve legacy reads but never let an old writer replace an
+            # upgraded mutable document with a weaker encryption envelope.
+            if row is not None and name in {"profiles","workflows"}:
+                try:
+                    previous=json.loads(row["blob"])
+                    previous_factor,_=_envelope_kdf(previous)
+                except (ValueError,TypeError,KeyError):
+                    raise HubError(409,"Existing document envelope is invalid; restore or review it first") from None
+                new_factor,_=_envelope_kdf(blob)
+                if (new_factor < previous_factor or
+                        ("kdf" in previous and "kdf" not in blob)):
+                    raise HubError(409,"KDF downgrade refused; upgrade the sync client before publishing")
+            # Session parts/manifests are immutable; a writer cannot
+            # rewrite an already-published encrypted backup.
+            match=_SESSION_NAME.fullmatch(name) if name.startswith("session-") else None
+            if match and c.execute(
+                "SELECT 1 FROM revoked_sessions WHERE team_id=? AND session_id=?",
+                (team_id,match.group(1))).fetchone():
+                raise HubError(410,"Encrypted session handoff revoked")
+            if name.startswith("session-") and row is not None:
+                raise HubError(409,"Published session archive documents are immutable")
+            if name.startswith("session-"):
+                count=c.execute(
+                    "SELECT COUNT(*) FROM documents WHERE team_id=? AND substr(name,1,8)='session-'",
+                    (team_id,)).fetchone()[0]
+                if count>=2048:
+                    raise HubError(413,"Team archive storage quota exceeded")
+                owned=c.execute(
+                    "SELECT COUNT(*) AS documents,COALESCE(SUM(LENGTH(blob)),0) AS bytes "
+                    "FROM documents WHERE team_id=? AND creator_id=? "
+                    "AND substr(name,1,8)='session-'", (team_id,actor)).fetchone()
+                if (owned["documents"]>=MAX_MEMBER_SESSION_DOCUMENTS or
+                        owned["bytes"]+len(raw.encode("utf-8"))>MAX_MEMBER_SESSION_BYTES):
+                    raise HubError(413,"Member archive storage quota exceeded")
+            c.execute(
+                "INSERT INTO documents(team_id,name,revision,blob,creator_id) "
+                "VALUES(?,?,?,?,?) ON CONFLICT(team_id,name) "
+                "DO UPDATE SET revision=excluded.revision,blob=excluded.blob",
+                (team_id,name,actual+1,raw,actor))
+
         return actual+1
 
 
@@ -480,25 +482,20 @@ class TeamHub:
             raise HubError(400,"Invalid session handoff ID") from None
         if session_id != canonical:
             raise HubError(400,"Session handoff ID must be canonical lowercase UUID")
-        with closing(self._db()) as c:
-            c.execute("BEGIN IMMEDIATE")
-            try:
-                current=c.execute(
-                    "SELECT role FROM members WHERE team_id=? AND user_id=?",
-                    (team_id,actor)).fetchone()
-                if current is None or ROLE_LEVEL[current["role"]] < ROLE_LEVEL["admin"]:
-                    raise HubError(403,"Team access denied")
-                c.execute("INSERT OR IGNORE INTO revoked_sessions VALUES(?,?,?)",
-                          (team_id,canonical,time.time()))
-                removed=c.execute(
-                    "DELETE FROM documents WHERE team_id=? "
-                    "AND substr(name,1,8)='session-' "
-                    "AND substr(name,9,36)=? AND substr(name,45,1)='-'",
-                    (team_id,canonical)).rowcount
-                c.commit()
-            except BaseException:
-                c.rollback()
-                raise
+        with self.write_transaction() as c:
+            current=c.execute(
+                "SELECT role FROM members WHERE team_id=? AND user_id=?",
+                (team_id,actor)).fetchone()
+            if current is None or ROLE_LEVEL[current["role"]] < ROLE_LEVEL["admin"]:
+                raise HubError(403,"Team access denied")
+            c.execute("INSERT OR IGNORE INTO revoked_sessions VALUES(?,?,?)",
+                      (team_id,canonical,time.time()))
+            removed=c.execute(
+                "DELETE FROM documents WHERE team_id=? "
+                "AND substr(name,1,8)='session-' "
+                "AND substr(name,9,36)=? AND substr(name,45,1)='-'",
+                (team_id,canonical)).rowcount
+
         return removed
 
 
@@ -720,8 +717,7 @@ def merge_safe_profiles(store,document:dict,*,active=lambda _:False,
         normalized.append(record)
     if expected_local is not None:
         _profiles(expected_local)
-    with store.transaction() as conn:
-        conn.execute("BEGIN IMMEDIATE")
+    with store.write_transaction() as conn:
         if expected_local is not None:
             # Do not query Store.all() from a second connection. Comparing in
             # the write transaction closes the edit-after-preview race.
