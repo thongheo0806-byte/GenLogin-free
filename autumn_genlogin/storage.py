@@ -101,6 +101,18 @@ class Store:
         """
         return self._connect()
 
+    @contextmanager
+    def write_transaction(self):
+        """Reserve the SQLite writer before reading data to be mutated.
+
+        The context owns BEGIN IMMEDIATE, commit and rollback. It must not
+        be nested on the same reused connection; callers must not commit
+        manually or keep the connection beyond this context.
+        """
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            yield conn
+
     def read(self):
         """Public, truly read-only SQLite snapshot context.
 
