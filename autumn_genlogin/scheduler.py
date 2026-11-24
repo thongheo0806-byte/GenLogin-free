@@ -250,8 +250,7 @@ class ScheduleStore:
         if status not in {"succeeded","failed","cancelled"}:
             raise ValueError("Nonterminal browser run status")
         kind = self._safe_error(error) if error else ""
-        with self.store.transaction() as c:
-            c.execute("BEGIN IMMEDIATE")
+        with self.store.write_transaction() as c:
             row = c.execute("SELECT job_id,status FROM schedule_runs WHERE id=?", (str(UUID(dispatch_id)),)).fetchone()
             if not row or row["status"] not in {"submitted","dispatch_pending"}:
                 return
@@ -270,8 +269,7 @@ class ScheduleStore:
         """
         job_id = str(UUID(job_id))
         next_run = iso(now or utcnow())
-        with self.store.transaction() as c:
-            c.execute("BEGIN IMMEDIATE")
+        with self.store.write_transaction() as c:
             row = c.execute("SELECT enabled,interval_seconds,last_status FROM schedules WHERE id=?",
                             (job_id,)).fetchone()
             if row is None:
