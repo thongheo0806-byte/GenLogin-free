@@ -5,8 +5,9 @@ from dataclasses import asdict, dataclass, field
 import re
 from ipaddress import ip_address
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
-from urllib.parse import urlparse
-from uuid import uuid4
+from uuid import UUID, uuid4
+
+from .actions import ACTIONS, NUMERIC_FIELDS, valid_http_url
 
 
 @dataclass
@@ -86,40 +87,22 @@ class Profile:
         return asdict(self)
 
 
-def valid_http_url(value: str) -> str:
-    if not isinstance(value, str):
-        raise ValueError("URL must be a string")
-    parsed = urlparse(value)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc or parsed.username or parsed.password:
-        raise ValueError("Only http(s) URLs without embedded credentials are accepted")
-    if len(value) > 4096 or any(c in value for c in "\r\n\x00"):
-        raise ValueError("Invalid URL")
-    return value
-
-
 def validated_steps(source: object) -> list[dict]:
     """Strict, code-free automation schema; no arbitrary JS/shell execution."""
     if not isinstance(source, list) or not 1 <= len(source) <= 100:
         raise ValueError("Workflow must be a list of 1-100 steps")
-    kinds = {
-        "goto": ("url",), "click": ("selector",), "click_image": ("template_id", "confidence"), "fill": ("selector", "text"),
-        "wait": ("seconds",), "wait_for": ("selector",),
-        "screenshot": (), "extract_text": ("selector",),
-        "press": ("selector", "key"), "check": ("selector",),
-        "uncheck": ("selector",), "select_option": ("selector", "value"),
-        "scroll_into_view": ("selector",),
-    }
     steps = []
     for number, item in enumerate(source, 1):
-        if not isinstance(item, dict) or item.get("action") not in kinds:
+        if not isinstance(item, dict) or item.get("action") not in ACTIONS:
             raise ValueError(f"Step {number}: unknown action")
         action = item["action"]
-        allowed = {"action", *kinds[action]}
+        definition = ACTIONS[action]
+        allowed = {"action", *definition.fields}
         # Recorded DOM actions can target a precise tab slot and nested frame.
         # Legacy steps without this context still target the first tab.
         if any(key in item for key in (
                 "tab_index", "tab_count", "frames", "tab_token", "frame_tokens")):
-            if "selector" not in kinds[action]:
+            if "selector" not in definition.fields:
                 raise ValueError(f"Step {number}: tab/frame context requires a DOM selector")
             allowed.update({"tab_index", "tab_count"})
             for optional in ("frames", "tab_token", "frame_tokens"):
@@ -127,9 +110,9 @@ def validated_steps(source: object) -> list[dict]:
                     allowed.add(optional)
         if set(item) != allowed:
             raise ValueError(f"Step {number}: unexpected or missing fields")
-        for key in kinds[action]:
+        for key in definition.fields:
             value = item[key]
-            if key in {"seconds", "confidence"}:
+            if key in NUMERIC_FIELDS:
                 if isinstance(value, bool) or not isinstance(value, (int, float)):
                     raise ValueError(f"Step {number}: {key} must be numeric")
                 if key == "seconds" and not 0 <= value <= 30:
@@ -154,7 +137,6 @@ def validated_steps(source: object) -> list[dict]:
                 if (not isinstance(token,str) or
                         not re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}",token)):
                     raise ValueError(f"Step {number}: invalid live tab identity token")
-                from uuid import UUID
                 if UUID(token).version!=4:
                     raise ValueError(f"Step {number}: invalid live tab identity token")
                 if frames and "frame_tokens" not in item:
@@ -167,13 +149,10 @@ def validated_steps(source: object) -> list[dict]:
                                not re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}",token)
                                for token in tokens)):
                     raise ValueError(f"Step {number}: invalid live iframe identities")
-                from uuid import UUID
                 if any(UUID(token).version!=4 for token in tokens):
                     raise ValueError(f"Step {number}: invalid live iframe identities")
-        if action == "goto":
-            valid_http_url(item["url"])
-        if action == "click_image" and not re.fullmatch(r"[0-9a-f]{64}", item["template_id"]):
-            raise ValueError(f"Step {number}: invalid image template ID")
+        for validator in definition.validators:
+            validator(item, number)
         if "selector" in item and any(c in item["selector"] for c in "\x00\r\n"):
             raise ValueError(f"Step {number}: invalid selector")
         steps.append(item.copy())
