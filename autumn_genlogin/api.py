@@ -2,12 +2,63 @@
 from __future__ import annotations
 
 import hmac
-import sqlite3
 import json
+import re
 import secrets
+import sqlite3
 import threading
+from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import parse_qs, urlparse
+
+
+class APIProblem(Exception):
+    def __init__(self, status: int, message: str):
+        self.status = status
+        self.message = message
+        super().__init__(message)
+
+
+@dataclass(frozen=True)
+class Route:
+    method: str
+    pattern: re.Pattern
+    handler: str
+    service: str | None = None
+    profile: bool = False
+    command: str | None = None
+
+
+def _route(method, path, handler, *, service=None, profile=False, command=None):
+    return Route(method, re.compile(path), handler, service, profile, command)
+
+
+# Patterns are compiled once, and never interpreted as code from HTTP input.
+# Keep the established GET/POST trailing slash contract and optional services.
+_PROFILE = r"/v1/profiles/(?P<id>[^/]*)"
+_BATCH = r"/v1/batches/(?P<id>[^/]+)"
+ROUTES = (
+    _route("GET", r"/v1/health", "health"),
+    _route("GET", r"/v1/profiles", "profiles"),
+    _route("GET", r"/v1/schedules", "schedules", service="schedules"),
+    _route("GET", r"/v1/schedules/history", "schedule_history", service="schedules"),
+    _route("GET", r"/v1/batches", "batches", service="batches"),
+    _route("GET", _BATCH + r"/*", "batch", service="batches"),
+    _route("GET", _PROFILE + r"/recording", "recording", profile=True),
+    _route("GET", _PROFILE + r"/runs/latest", "latest_run", profile=True),
+    _route("POST", r"/v1/batches", "start_batch", service="batches"),
+    _route("POST", _BATCH + r"/cancel", "cancel_batch", service="batches"),
+    _route("POST", _PROFILE + r"/open", "profile_command", profile=True, command="start"),
+    _route("POST", _PROFILE + r"/stop", "profile_command", profile=True, command="stop"),
+    _route("POST", _PROFILE + r"/run", "run_steps", profile=True),
+    _route("POST", _PROFILE + r"/run-graph", "run_graph", profile=True),
+    _route("POST", _PROFILE + r"/record-start", "profile_command", profile=True, command="start_recording"),
+    _route("POST", _PROFILE + r"/record-stop", "profile_command", profile=True, command="stop_recording"),
+    _route("POST", _PROFILE + r"/cancel", "profile_command", profile=True, command="cancel"),
+    # Historical behavior resolves the profile before rejecting an unknown
+    # action. No dynamic command is selected by the untrusted path.
+    _route("POST", _PROFILE + r"/[^/]+", "not_found", profile=True),
+)
 
 
 class LocalAPI:
@@ -41,148 +92,150 @@ class LocalAPI:
 
             def _authorized(self):
                 actual = self.headers.get("Authorization", "")
-                # compare_digest(str, str) rejects non-ASCII; bytes avoid a dropped connection.
-                if not hmac.compare_digest(actual.encode("utf-8"), ("Bearer " + controller.token).encode("utf-8")):
-                    self._json(401, {"error": "Unauthorized"})
-                    return False
-                return True
+                return hmac.compare_digest(actual.encode("utf-8"),
+                    ("Bearer " + controller.token).encode("utf-8"))
+
+            def _body(self):
+                length = int(self.headers.get("Content-Length", "0"))
+                if length < 0 or length > 32768:
+                    raise ValueError("Invalid request length or payload too large")
+                return json.loads(self.rfile.read(length) or b"{}")
+
+            def _resolve_profile(self, ident, method):
+                try:
+                    return controller.store.get(ident).id
+                except KeyError:
+                    raise APIProblem(404, "Profile not found" if method == "GET"
+                                     else "Requested resource not found") from None
+                except ValueError:
+                    if method == "GET":
+                        raise APIProblem(400, "Invalid profile ID") from None
+                    raise
+
+            def _match(self, method, path):
+                # GET collection endpoints have exact paths; historical POST
+                # endpoints and GET batch detail accept trailing slashes.
+                if method == "POST":
+                    path = "/" + path.strip("/")
+                for route in ROUTES:
+                    if route.method != method:
+                        continue
+                    if route.service and getattr(controller, route.service) is None:
+                        continue
+                    match = route.pattern.fullmatch(path)
+                    if match:
+                        return route, match.groupdict().get("id")
+                raise APIProblem(404, "Not found")
 
             def do_GET(self):
-                if not self._authorized():
-                    return
-                try:
-                    self._do_get_authorized()
-                except (sqlite3.Error, OSError):
-                    self._json(503, {"error": "Local storage unavailable; run Diagnostics"})
-                except (ValueError, TypeError):
-                    self._json(400, {"error": "Invalid request parameters"})
-
-            def _do_get_authorized(self):
-                path = urlparse(self.path).path
-                if path == "/v1/health":
-                    self._json(200, {"status": "ok", "running": controller.manager.count()})
-                elif path == "/v1/profiles":
-                    self._json(200, {"profiles": [
-                        {"id": p.id, "name": p.name, "group": p.group_name, "running": controller.manager.active(p.id)}
-                        for p in controller.store.all()
-                    ]})
-                elif path == "/v1/schedules" and controller.schedules is not None:
-                    self._json(200, {"schedules": [
-                        {"id":job.id,"profile_id":job.profile_id,
-                         "next_run_utc":job.next_run_utc,"interval_seconds":job.interval_seconds,
-                         "enabled":job.enabled,"last_status":job.last_status,"last_error":job.last_error}
-                        for job in controller.schedules.list()]})
-                elif path == "/v1/batches" and controller.batches is not None:
-                    params = parse_qs(urlparse(self.path).query)
-                    limit = int(params.get("limit", ["20"])[0])
-                    self._json(200, {"batches":controller.batches.list(limit=limit)})
-                elif path.startswith("/v1/batches/") and controller.batches is not None:
-                    parts = path.strip("/").split("/")
-                    if len(parts) != 3:
-                        return self._json(404, {"error":"Not found"})
-                    try:
-                        record = controller.batches.get(parts[2])
-                    except KeyError:
-                        return self._json(404, {"error":"Batch not found"})
-                    self._json(200, {"batch":record})
-                elif path == "/v1/schedules/history" and controller.schedules is not None:
-                    params = parse_qs(urlparse(self.path).query)
-                    limit = int(params.get("limit",["50"])[0])
-                    schedule_id = params.get("schedule_id",[None])[0]
-                    self._json(200, {"runs": [
-                        {"id":run.id,"job_id":run.job_id,"profile_id":run.profile_id,
-                         "started_utc":run.started_utc,"finished_utc":run.finished_utc,
-                         "status":run.status,"error_type":run.error_type}
-                        for run in controller.schedules.history(schedule_id,limit)]})
-                elif len(path.strip("/").split("/")) == 4 and path.endswith("/recording"):
-                    parts = path.strip("/").split("/")
-                    if parts[:2] != ["v1", "profiles"]:
-                        return self._json(404, {"error":"Not found"})
-                    try: pid = controller.store.get(parts[2]).id
-                    except KeyError: return self._json(404, {"error":"Profile not found"})
-                    except ValueError: return self._json(400, {"error":"Invalid profile ID"})
-                    self._json(200, {"steps":controller.manager.recorded_steps(pid)})
-                elif len(path.strip("/").split("/")) == 5 and path.endswith("/runs/latest"):
-                    parts = path.strip("/").split("/")
-                    if parts[:2] != ["v1", "profiles"]:
-                        self._json(404, {"error": "Not found"})
-                        return
-                    try:
-                        pid = controller.store.get(parts[2]).id
-                    except KeyError:
-                        self._json(404, {"error": "Profile not found"})
-                        return
-                    except ValueError:
-                        self._json(400, {"error": "Invalid profile ID"})
-                        return
-                    result = controller.manager.last_run(pid)
-                    if result is None:
-                        self._json(404, {"error": "No recent workflow run"})
-                    else:
-                        self._json(200, {"run": result})
-                else:
-                    self._json(404, {"error": "Not found"})
+                self._serve("GET")
 
             def do_POST(self):
+                self._serve("POST")
+
+            def _serve(self, method):
                 if not self._authorized():
-                    return
+                    return self._json(401, {"error": "Unauthorized"})
                 try:
-                    content_length = int(self.headers.get("Content-Length", "0"))
-                    if content_length < 0 or content_length > 32768:
-                        raise ValueError("Invalid request length or payload too large")
-                    data = json.loads(self.rfile.read(content_length) or b"{}")
-                    parts = urlparse(self.path).path.strip("/").split("/")
-                    if controller.batches is not None and parts == ["v1", "batches"]:
-                        if not isinstance(data,dict):
-                            raise ValueError("Expected JSON object")
-                        ident = controller.batches.start(data.get("profile_ids"),
-                            data.get("workflow"), max_parallel=data.get("max_parallel",3))
-                        self._json(202, {"accepted":True,"batch_id":ident})
-                        return
-                    if controller.batches is not None and len(parts)==4 and parts[:2]==["v1","batches"] and parts[3]=="cancel":
-                        try:
-                            controller.batches.cancel(parts[2])
-                        except KeyError:
-                            return self._json(404, {"error":"Batch is not active in this application"})
-                        self._json(202, {"accepted":True})
-                        return
-                    if len(parts) != 4 or parts[:2] != ["v1", "profiles"]:
-                        self._json(404, {"error": "Not found"})
-                        return
-                    pid, action = parts[2:]
-                    pid = controller.store.get(pid).id
-                    if action == "open":
-                        controller.manager.start(pid)
-                    elif action == "stop":
-                        controller.manager.stop(pid)
-                    elif action == "run":
-                        if not isinstance(data, dict) or "steps" not in data:
-                            raise ValueError("Missing required field: steps")
-                        controller.manager.run_steps(pid, data["steps"])
-                    elif action == "run-graph":
-                        if not isinstance(data, dict) or "graph" not in data:
-                            raise ValueError("Missing required field: graph")
-                        controller.manager.run_graph(pid, data["graph"])
-                    elif action == "record-start":
-                        controller.manager.start_recording(pid)
-                    elif action == "record-stop":
-                        controller.manager.stop_recording(pid)
-                    elif action == "cancel":
-                        controller.manager.cancel(pid)
-                    else:
-                        self._json(404, {"error": "Not found"})
-                        return
-                    self._json(202, {"accepted": True})
-                except (ValueError, TypeError, json.JSONDecodeError) as exc:
-                    self._json(400, {"error": str(exc)[:200]})
-                except KeyError:
-                    self._json(404, {"error": "Requested resource not found"})
-                except RuntimeError:
-                    # Busy browsers and exhausted batch slots are conflicts,
-                    # not a dropped HTTP connection or leaked exception string.
-                    self._json(409, {"error": "Resource busy or action cannot be started"})
+                    parsed = urlparse(self.path)
+                    # Preserve the previous body-validation order for POST.
+                    data = self._body() if method == "POST" else None
+                    route, ident = self._match(method, parsed.path)
+                    if route.profile:
+                        ident = self._resolve_profile(ident, method)
+                    status, payload = getattr(self, "_handle_" + route.handler)(
+                        ident, data, parse_qs(parsed.query), route.command)
+                except APIProblem as exc:
+                    status, payload = exc.status, {"error": exc.message}
                 except (sqlite3.Error, OSError):
-                    self._json(503, {"error": "Local storage unavailable; run Diagnostics"})
+                    status, payload = 503, {"error": "Local storage unavailable; run Diagnostics"}
+                except (ValueError, TypeError) as exc:
+                    status, payload = 400, {"error": str(exc)[:200] if method == "POST"
+                                            else "Invalid request parameters"}
+                except KeyError:
+                    status, payload = 404, {"error": "Requested resource not found"}
+                except RuntimeError:
+                    status, payload = 409, {"error": "Resource busy or action cannot be started"}
+                self._json(status, payload)
+
+            def _handle_health(self, *_):
+                return 200, {"status": "ok", "running": controller.manager.count()}
+
+            def _handle_profiles(self, *_):
+                return 200, {"profiles": [
+                    {"id": p.id, "name": p.name, "group": p.group_name,
+                     "running": controller.manager.active(p.id)}
+                    for p in controller.store.all()]}
+
+            def _handle_schedules(self, *_):
+                return 200, {"schedules": [
+                    {"id": job.id, "profile_id": job.profile_id,
+                     "next_run_utc": job.next_run_utc, "interval_seconds": job.interval_seconds,
+                     "enabled": job.enabled, "last_status": job.last_status,
+                     "last_error": job.last_error} for job in controller.schedules.list()]}
+
+            def _handle_schedule_history(self, ident, data, params, command):
+                limit = int(params.get("limit", ["50"])[0])
+                schedule_id = params.get("schedule_id", [None])[0]
+                return 200, {"runs": [
+                    {"id": run.id, "job_id": run.job_id, "profile_id": run.profile_id,
+                     "started_utc": run.started_utc, "finished_utc": run.finished_utc,
+                     "status": run.status, "error_type": run.error_type}
+                    for run in controller.schedules.history(schedule_id, limit)]}
+
+            def _handle_batches(self, ident, data, params, command):
+                limit = int(params.get("limit", ["20"])[0])
+                return 200, {"batches": controller.batches.list(limit=limit)}
+
+            def _handle_batch(self, ident, *_):
+                try:
+                    record = controller.batches.get(ident)
+                except KeyError:
+                    raise APIProblem(404, "Batch not found") from None
+                return 200, {"batch": record}
+
+            def _handle_recording(self, ident, *_):
+                return 200, {"steps": controller.manager.recorded_steps(ident)}
+
+            def _handle_latest_run(self, ident, *_):
+                result = controller.manager.last_run(ident)
+                if result is None:
+                    raise APIProblem(404, "No recent workflow run")
+                return 200, {"run": result}
+
+            def _handle_start_batch(self, ident, data, *_):
+                if not isinstance(data, dict):
+                    raise ValueError("Expected JSON object")
+                batch_id = controller.batches.start(data.get("profile_ids"),
+                    data.get("workflow"), max_parallel=data.get("max_parallel", 3))
+                return 202, {"accepted": True, "batch_id": batch_id}
+
+            def _handle_cancel_batch(self, ident, *_):
+                try:
+                    controller.batches.cancel(ident)
+                except KeyError:
+                    raise APIProblem(404, "Batch is not active in this application") from None
+                return 202, {"accepted": True}
+
+            def _handle_profile_command(self, ident, data, params, command):
+                # The command originates solely from the immutable route table.
+                getattr(controller.manager, command)(ident)
+                return 202, {"accepted": True}
+
+            def _handle_run_steps(self, ident, data, *_):
+                if not isinstance(data, dict) or "steps" not in data:
+                    raise ValueError("Missing required field: steps")
+                controller.manager.run_steps(ident, data["steps"])
+                return 202, {"accepted": True}
+
+            def _handle_run_graph(self, ident, data, *_):
+                if not isinstance(data, dict) or "graph" not in data:
+                    raise ValueError("Missing required field: graph")
+                controller.manager.run_graph(ident, data["graph"])
+                return 202, {"accepted": True}
+
+            def _handle_not_found(self, *_):
+                raise APIProblem(404, "Not found")
 
         self.server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
         self.thread = threading.Thread(target=self.server.serve_forever, name="local-api", daemon=True)
