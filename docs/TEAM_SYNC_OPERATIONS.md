@@ -174,3 +174,27 @@ This bounds concurrent authentication KDF memory, not all HTTP request
 threads or the total server memory. Production reverse proxies must enforce
 connection limits, request-size limits and login rate limits; do not expose
 the loopback development hub directly to the internet.
+
+
+## 2026-11-24 protocol migration and bounded HTTP admission
+
+- Legacy encrypted documents remain readable and may be upgraded on the
+  client by decrypting and publishing a new versioned envelope. Once a
+  mutable metadata document has a versioned or stronger KDF, a subsequent
+  write may not remove its KDF metadata or lower its work factor. The Hub
+  refuses that downgrade inside the revision-checked transaction. It does
+  not possess the passphrase and cannot re-encrypt legacy data by itself.
+- A current client encountering an older Hub's envelope rejection receives
+  explicit upgrade instructions; it never silently falls back to legacy
+  encryption. Upgrade the Hub and **all** team clients before publishing new
+  documents. Unmodified old clients cannot decode new envelopes. Existing
+  encrypted data is not automatically rewritten, and rolling back to an
+  older server after migration is not recommended.
+- Each Hub HTTP server admits at most 32 handler threads. A saturated
+  listener closes unparsed connections before creating a thread, while the
+  four concurrent account-KDF slots still return HTTP 503 when busy.
+  This is resource admission, not comprehensive abuse prevention.
+- Archive listing, quota checks and revocation use indexed expressions on
+  immutable session-document names. No duplicated mutable session-ID column
+  or destructive database migration is required. Admin listing still
+  verifies canonical names and aggregates the bounded results.
