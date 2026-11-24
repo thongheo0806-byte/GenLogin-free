@@ -12,11 +12,12 @@ from collections import Counter
 from copy import deepcopy
 from dataclasses import dataclass
 
+from .actions import ACTIONS
 from .models import validated_steps
 
 MAX_RECORDED_STEPS = 100
 ALLOWED_RECORDED_ACTIONS = frozenset(
-    {"click", "fill", "select_option", "check", "uncheck", "press"}
+    name for name, definition in ACTIONS.items() if definition.recordable
 )
 ALLOWED_RECORDED_KEYS = frozenset({"Enter", "Tab", "Escape"})
 

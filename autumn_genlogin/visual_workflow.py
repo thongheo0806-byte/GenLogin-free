@@ -9,23 +9,10 @@ import json
 import tkinter as tk
 from tkinter import messagebox, ttk
 
+from .actions import ACTIONS, NUMERIC_FIELDS
 from .models import validated_steps
 
-FIELDS = {
-    "goto": ("url",),
-    "click": ("selector",),
-    "click_image": ("template_id", "confidence"),
-    "fill": ("selector", "text"),
-    "wait": ("seconds",),
-    "wait_for": ("selector",),
-    "screenshot": (),
-    "extract_text": ("selector",),
-    "press": ("selector", "key"),
-    "check": ("selector",),
-    "uncheck": ("selector",),
-    "select_option": ("selector", "value"),
-    "scroll_into_view": ("selector",),
-}
+FIELDS = {name: definition.fields for name, definition in ACTIONS.items()}
 DEFAULTS = {"url": "https://example.com", "selector": "h1", "text": "example", "seconds": "1", "confidence": "0.94", "template_id": "", "key": "Enter", "value": "value"}
 
 
@@ -73,7 +60,7 @@ class StepDialog(tk.Toplevel):
     def save(self):
         entry = {"action": self.action.get()}
         try:
-            entry.update({k: float(v.get()) if k in {"seconds", "confidence"} else v.get() for k, v in self.inputs.items()})
+            entry.update({k: float(v.get()) if k in NUMERIC_FIELDS else v.get() for k, v in self.inputs.items()})
             validated_steps([entry])
         except (ValueError, TypeError) as exc:
             messagebox.showerror("Invalid step", str(exc), parent=self)
