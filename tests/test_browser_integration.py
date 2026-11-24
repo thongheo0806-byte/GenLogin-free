@@ -70,9 +70,9 @@ class BrowserIntegrationTests(unittest.TestCase):
 
 
 
-    def test_real_browsermanager_workflow_and_lifecycle(self):
-        """Unlike earlier direct Playwright tests, exercise browser.py itself."""
-        from autumn_genlogin.browser import BrowserManager
+    def test_real_shared_manager_workflow_and_lifecycle(self):
+        """Exercise production shared manager's linear workflow and lifecycle."""
+        from autumn_genlogin.browser_shared import SharedBrowserManager
         from autumn_genlogin.models import Profile
         from autumn_genlogin.storage import Store
         with tempfile.TemporaryDirectory() as base:
@@ -82,8 +82,8 @@ class BrowserIntegrationTests(unittest.TestCase):
             thread.start()
             try:
                 origin=f"http://127.0.0.1:{server.server_address[1]}"
-                profile=store.save(Profile(name="BrowserManager fixture", browser="chromium", start_url=origin))
-                manager=BrowserManager(store, headless=True)
+                profile=store.save(Profile(name="SharedBrowserManager fixture", browser="chromium", start_url=origin))
+                manager=SharedBrowserManager(store, headless=True)
                 manager.start(profile.id)
                 def await_condition(condition, seconds=20):
                     deadline=time.monotonic()+seconds
@@ -103,7 +103,8 @@ class BrowserIntegrationTests(unittest.TestCase):
                     self.assertEqual(run["extracted"][0]["text"],"Local fixture")
                 finally:
                     manager.stop_all()
-                    self.assertTrue(await_condition(lambda: manager.count()==0),"BrowserManager worker/lease not released")
+                    self.assertTrue(await_condition(lambda: manager.count()==0),"SharedBrowserManager session/lease not released")
+                    manager.close_driver()
             finally:
                 server.shutdown()
                 server.server_close()
@@ -116,13 +117,13 @@ class BrowserIntegrationTests(unittest.TestCase):
         behaves identically under every window manager.
         """
         import psutil
-        from autumn_genlogin.browser import BrowserManager
+        from autumn_genlogin.browser_shared import SharedBrowserManager
         from autumn_genlogin.models import Profile
         from autumn_genlogin.storage import Store
         with tempfile.TemporaryDirectory() as base:
             store = Store(Path(base) / "app")
             profile = store.save(Profile(name="forced-close", browser="chromium", start_url="http://127.0.0.1:1"))
-            manager = BrowserManager(store, headless=True)
+            manager = SharedBrowserManager(store, headless=True)
             manager.start(profile.id)
             try:
                 deadline = time.monotonic() + 25
@@ -161,6 +162,11 @@ class BrowserIntegrationTests(unittest.TestCase):
                 self.assertIsNone(manager.last_run(profile.id), "extracted text must not survive browser exit")
             finally:
                 manager.stop_all()
+                deadline = time.monotonic() + 25
+                while manager.count() and time.monotonic() < deadline:
+                    time.sleep(.1)
+                self.assertEqual(manager.count(), 0)
+                manager.close_driver()
 
     def test_real_chromium_loads_opt_in_mv3_extension(self):
         import json
