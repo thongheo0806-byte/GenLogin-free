@@ -3,21 +3,21 @@
 Reproduction scripts from another environment were not accessible here; these
 independently verify the reported call chains against the inspected GitHub SHA.
 """
+import asyncio
 import json
 import os
 import sqlite3
 import subprocess
 import sys
 import tempfile
-import threading
-import time
 import unittest
 from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
 from uuid import uuid4
 
-from autumn_genlogin.browser import BrowserManager
+from autumn_genlogin.browser_shared import Session, SharedBrowserManager
+from autumn_genlogin.locks import ProfileLease
 from autumn_genlogin.diagnostics import audit_store
 from autumn_genlogin.extensions import ExtensionLibrary
 from autumn_genlogin.models import Profile, validated_steps
@@ -153,76 +153,87 @@ class BrowserLifecycleRegressions(unittest.TestCase):
         self.store=Store(Path(self.tmp.name))
 
     def test_manually_closed_browser_releases_worker_without_stop(self):
-        from playwright import sync_api
-        closed = threading.Event()
-        ready = threading.Event()
+        from types import SimpleNamespace
 
         class FakePage:
-            def goto(self,*args,**kwargs): return None
-            def wait_for_timeout(self,ms):
-                time.sleep(0.01)
-                if closed.is_set():
-                    raise RuntimeError("Target page, context or browser has been closed")
+            def on(self, *_): pass
+            async def goto(self, *_args, **_kwargs): pass
+
         class FakeContext:
-            page=FakePage()
-            callback=None
+            def __init__(self):
+                self.pages = [FakePage()]
+                self.callback = None
             def on(self, event, callback):
-                if event=="close": self.callback=callback
-            def set_default_timeout(self, _): pass
-            @property
-            def pages(self):
-                if closed.is_set():
+                if event == "close":
+                    self.callback = callback
+            async def close(self):
+                self.pages = []
+                if self.callback:
                     self.callback(self)
-                    return []
-                return [self.page]
-            def close(self):
-                closed.set()
-                if self.callback: self.callback(self)
+
         class FakeChromium:
-            def launch_persistent_context(self, **kwargs):
-                ready.set()
-                return FakeContext()
-        class FakePlaywright:
-            chromium=FakeChromium()
-            def __enter__(self):return self
-            def __exit__(self,*_):pass
-        profile=self.store.save(Profile(browser="chromium"))
-        manager=BrowserManager(self.store)
-        with patch.object(sync_api, "sync_playwright", return_value=FakePlaywright()):
-            manager.start(profile.id)
-            self.assertTrue(ready.wait(2))
-            self.assertTrue(manager.active(profile.id))
-            closed.set() # user closes the entire browser window
-            deadline=time.monotonic()+3
-            while manager.active(profile.id) and time.monotonic()<deadline:
-                time.sleep(0.03)
-            self.assertFalse(manager.active(profile.id), "stale profile worker/lock after manual close")
-            self.assertEqual(manager.count(), 0)
-        self.assertEqual(manager.events.get_nowait()[1], "status")
+            async def launch_persistent_context(self, **_kwargs):
+                return context
+
+        context = FakeContext()
+        profile = self.store.save(Profile(browser="chromium"))
+        manager = SharedBrowserManager(self.store)
+        manager._playwright = SimpleNamespace(chromium=FakeChromium())
+
+        async def exercise():
+            session = Session(profile)
+            manager._sessions[profile.id] = session
+            opening = asyncio.create_task(manager._open(session))
+            try:
+                await asyncio.wait_for(session.ready.wait(), timeout=5)
+                self.assertTrue(manager.active(profile.id))
+                self.assertFalse(opening.done())
+                # Browser context closes spontaneously, not manager.stop().
+                await context.close()
+                await asyncio.wait_for(opening, timeout=5)
+                self.assertFalse(manager.active(profile.id))
+                self.assertEqual(manager.count(), 0)
+                self.assertIsNone(manager.last_run(profile.id))
+                # Prove the actual OS lease is released, not just the UI flag.
+                with ProfileLease(self.store.base, profile.id):
+                    pass
+            finally:
+                session.closed.set()
+                await asyncio.wait_for(opening, timeout=5)
+        asyncio.run(exercise())
 
     def test_browser_proxy_server_brackets_ipv6(self):
-        from playwright import sync_api
-        options={}
+        from types import SimpleNamespace
+
+        options = {}
+        class FakePage:
+            def on(self, *_): pass
+            async def goto(self, *_args, **_kwargs): pass
         class FakeContext:
-            def on(self,*_):pass
-            def set_default_timeout(self,*_):pass
-            @property
-            def pages(self):return []
-            def new_page(self):return type("Page",(),{"goto":lambda *_a,**_kw:None})()
-            def close(self):pass
-        class FakePlaywright:
-            def __enter__(self):return self
-            def __exit__(self,*_):pass
-            class chromium:
-                @staticmethod
-                def launch_persistent_context(**kwargs):
-                    options.update(kwargs)
-                    return FakeContext()
-        p = self.store.save(Profile(browser="chromium", proxy_scheme="http", proxy_host="::1", proxy_port=8080))
-        manager=BrowserManager(self.store)
-        with patch.object(sync_api,"sync_playwright",return_value=FakePlaywright()):
-            manager._run_session(p, __import__("queue").Queue(), threading.Event())
-        self.assertEqual(options["proxy"]["server"], "http://[::1]:8080")
+            pages = [FakePage()]
+            def on(self, *_): pass
+            async def close(self): pass
+        class FakeChromium:
+            async def launch_persistent_context(self, **kwargs):
+                options.update(kwargs)
+                return FakeContext()
+
+        profile = self.store.save(Profile(
+            browser="chromium", proxy_scheme="http",
+            proxy_host="::1", proxy_port=8080))
+        manager = SharedBrowserManager(self.store)
+        manager._playwright = SimpleNamespace(chromium=FakeChromium())
+
+        async def exercise():
+            session = Session(profile)
+            opening = asyncio.create_task(manager._open(session))
+            try:
+                await asyncio.wait_for(session.ready.wait(), timeout=5)
+                self.assertEqual(options["proxy"]["server"], "http://[::1]:8080")
+            finally:
+                session.closed.set()
+                await asyncio.wait_for(opening, timeout=5)
+        asyncio.run(exercise())
 
 
 class VisualWorkflowRegressions(unittest.TestCase):
