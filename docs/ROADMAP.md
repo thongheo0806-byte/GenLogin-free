@@ -62,3 +62,17 @@ archive handoff callbacks. The same App worker bridge and consent prompts are
 retained; this is a behavior-preserving extraction, not automatic session sync.
 Existing Windows GUI tests remain the acceptance gate. Other tabs still need
 separate extraction and review.
+
+
+## 2026-11-24 retire legacy browser implementation
+
+The former synchronous browser manager had three test consumers only.
+The replacement suite preserves the six behavior checks: linear workflow
+and lifecycle with real Chromium, real Windows forced browser-process exit
+and result revocation, exact Playwright target-close classification,
+result TTL/clear, spontaneous context-close with actual OS lease release,
+and IPv6 proxy URI construction through the real shared startup path.
+The direct Playwright profile isolation/persistence and MV3 extension
+tests are retained. The CI unit lane now scans all tracked Python files for
+retired imports and refuses the retired module's return. This is a
+source-level behavior inventory, not a measured code-coverage percentage.
