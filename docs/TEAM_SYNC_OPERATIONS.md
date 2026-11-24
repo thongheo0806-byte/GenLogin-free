@@ -155,3 +155,22 @@ Only services that issued those sessions can revoke them. See
   larger values, full host load tests and independent security audit
   remain outstanding. The separate local `.aglb` profile backup has
   its **own** versioned KDF policy; this change does not rewrite it.
+
+
+## Authentication resource bounds (2026-11-24)
+
+Unknown usernames and known current-factor users with an incorrect password
+perform one current-cost scrypt derivation and return the same 401 response.
+Legacy N=16384 accounts perform two legacy derivations to approximate current
+work. This is timing-leak mitigation, not proof of constant-time HTTP
+responses; SQLite caching, old work factors and network effects can differ.
+Registration still reports duplicate usernames (409).
+
+At most four concurrent account-authentication KDF operations per process are
+admitted across login, registration and successful legacy-hash upgrades.
+Saturation returns 503 immediately, releasing slots on exceptions. Hash
+upgrades derive the new hash before obtaining the SQLite write lock.
+This bounds concurrent authentication KDF memory, not all HTTP request
+threads or the total server memory. Production reverse proxies must enforce
+connection limits, request-size limits and login rate limits; do not expose
+the loopback development hub directly to the internet.
