@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest.mock import patch, MagicMock
 from uuid import uuid4
 
-from autumn_genlogin.browser import BrowserManager
+from autumn_genlogin.browser_shared import SharedBrowserManager
 from autumn_genlogin.models import Profile
 from autumn_genlogin.storage import Store
 from autumn_genlogin.services import save_profile_with_credentials, delete_profile_with_credentials
@@ -150,12 +150,12 @@ class CredentialAndRunTests(unittest.TestCase):
 
     def test_only_playwright_targetclosed_exception_is_closed(self):
         from playwright._impl._errors import TargetClosedError
-        m = BrowserManager(self.store)
+        m = SharedBrowserManager(self.store)
         self.assertFalse(m._is_target_closed(RuntimeError("failed selector on closed page target")))
         self.assertTrue(m._is_target_closed(TargetClosedError("Target closed")))
 
     def test_run_result_expires_and_can_be_cleared(self):
-        m = BrowserManager(self.store)
+        m = SharedBrowserManager(self.store)
         p = self.store.save(Profile())
         m._runs[p.id] = {"status":"succeeded", "extracted":[{"text":"secret"}]}
         m._run_timestamps[p.id] = time.monotonic() - m.RUN_RESULT_TTL_SECONDS - 1
