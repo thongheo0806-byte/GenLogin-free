@@ -50,6 +50,39 @@ class StorageTests(unittest.TestCase):
                 raise RuntimeError("simulate rollback")
         self.assertEqual(self.store.get(profile.id).name,"Committed name")
 
+    def test_immediate_write_transaction_owns_commit_rollback_and_releases_lock(self):
+        for reuse in (False, True):
+            with self.subTest(reuse=reuse):
+                store = Store(Path(self.tmp.name) / ("reuse" if reuse else "fresh"),
+                              reuse_connections=reuse)
+                try:
+                    profile = store.save(Profile(name="original"))
+                    with store.write_transaction() as conn:
+                        self.assertTrue(conn.in_transaction)
+                        # A second connection must not be able to reserve the
+                        # writer before the first mutation.
+                        other = sqlite3.connect(store.db, timeout=0)
+                        try:
+                            with self.assertRaises(sqlite3.OperationalError):
+                                other.execute("BEGIN IMMEDIATE")
+                        finally:
+                            other.close()
+                        conn.execute("UPDATE profiles SET name=? WHERE id=?",
+                                     ("committed", profile.id))
+                    with self.assertRaisesRegex(RuntimeError, "rollback fixture"):
+                        with store.write_transaction() as conn:
+                            conn.execute("UPDATE profiles SET name=? WHERE id=?",
+                                         ("discarded", profile.id))
+                            raise RuntimeError("rollback fixture")
+                    with store.read() as conn:
+                        self.assertEqual(conn.execute(
+                            "SELECT name FROM profiles WHERE id=?",
+                            (profile.id,)).fetchone()[0], "committed")
+                    with store.write_transaction() as conn:
+                        self.assertTrue(conn.in_transaction)
+                finally:
+                    store.close_thread_connection()
+
     def test_metadata_export_sanitizes_sessions(self):
         p = self.store.save(Profile(name="Saved", proxy_scheme="http", proxy_host="example.com", proxy_port=8888, proxy_username="alice"))
         folder = self.store.profile_path(p.id)
