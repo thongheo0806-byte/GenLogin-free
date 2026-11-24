@@ -93,3 +93,24 @@ inference has been verified in CI.
 - Do not use this for CAPTCHA bypass, anti-fraud evasion, Sybil activity,
   mass-login workflows, commercial websites or personal accounts.
 - No consented GenLogin/Titan parity evidence is implied or acquired.
+
+
+## Bounded model decision experiment (2026-11-24)
+
+A separate `bounded_planner.py` experiment avoids executing model-written
+Python entirely. A fresh local Chromium fixture contains three randomly
+ordered synthetic buttons. Ollama sees only the observed option IDs and
+labels; its answer must be strict JSON selecting one enumerated option.
+The trusted Playwright executor performs exactly one click per trial.
+Success requires a matching server-side per-trial nonce signal from the
+fixture's trusted click event and the correct DOM result, in all three
+trials. The model cannot supply selectors, URLs, scripts or shell commands.
+The isolated runtime has no application data, credentials or real profiles.
+
+The new bounded proof workflow runs on its explicitly scoped internal
+acceptance PR and is otherwise manual-dispatch only. It is distinct from
+the experimental browser-use agent and must not be treated as proof that
+browser-use itself, an arbitrary-site automation agent, or Titan parity
+has been validated. The evidence is pending until the actual Docker job
+finishes; passing parser tests or the isolated Compose contract alone is
+not sufficient. HOLD EXE BUILD remains unchanged.
