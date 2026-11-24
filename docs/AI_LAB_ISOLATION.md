@@ -111,6 +111,21 @@ The new bounded proof workflow runs on its explicitly scoped internal
 acceptance PR and is otherwise manual-dispatch only. It is distinct from
 the experimental browser-use agent and must not be treated as proof that
 browser-use itself, an arbitrary-site automation agent, or Titan parity
-has been validated. The evidence is pending until the actual Docker job
-finishes; passing parser tests or the isolated Compose contract alone is
-not sufficient. HOLD EXE BUILD remains unchanged.
+has been validated. Passing parser tests or the isolated Compose contract alone is not
+sufficient; see the executed runtime evidence below. HOLD EXE BUILD remains unchanged.
+
+
+### Executed bounded planner proof (2026-11-24)
+
+[Docker run 45315092902](https://github.com/thongheo0806-byte/GenLogin-free/actions/runs/45315092902)
+on PR #60 head d153599557103972bb471fb6ac45f3fdaff7d193 recorded
+`REAL_OLLAMA_INFERENCE_VERIFIED` and
+`{"experiment":"bounded-ollama-planner","verified_trials":3,"total_trials":3,"status":"passed"}`.
+All eight ordinary CI jobs also passed at that head (run 45315092900).
+The earlier missing build-context source and exhausted thread budget runs
+remain negative evidence; they were not reclassified as passes.
+PR #60 is merged. This is independently verified **bounded synthetic**
+browser decision/execution, not general browser-use agent acceptance.
+The separate browser-use experiment remains unverified and excluded from
+production. The canonical desktop action schema does not extend the lab's
+narrow enumerated click allowlist. No GenLogin/Titan equivalence is implied.

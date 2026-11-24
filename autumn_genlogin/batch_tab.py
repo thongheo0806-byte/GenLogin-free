@@ -41,12 +41,11 @@ class BatchTabMixin:
         self.refresh_batches()
 
     def start_group_batch(self):
-        group=self.group.get()
+        group,ids=self.profile_group_snapshot()
         if not group or group=="All groups":
             messagebox.showwarning("Batch group","Select one specific Group in Profiles first.",parent=self.root)
             return
-        # Capture Tk widget/editor state BEFORE crossing the thread boundary.
-        ids=[p.id for p in self._cached_profiles if p.group_name==group]
+        # Group selection is a detached snapshot from the Profiles controller.
         if not ids:
             messagebox.showwarning("Batch group","No profiles in the selected group.",parent=self.root)
             return

@@ -4,7 +4,8 @@ import unittest
 
 from autumn_genlogin.schedule_tab import ScheduleTabMixin
 from autumn_genlogin.batch_tab import BatchTabMixin
-from autumn_genlogin.ui import App
+from autumn_genlogin.ui import App, ProfileEditor
+from autumn_genlogin.profiles_tab import ProfilesTabMixin, ProfileEditor as OwnedProfileEditor
 from autumn_genlogin.backup_tab import BackupTabMixin
 from autumn_genlogin.extension_tab import ExtensionTabMixin
 from autumn_genlogin.qa_sync_tab import QASyncTabMixin
@@ -106,6 +107,31 @@ class ExtractedScheduleTabTests(unittest.TestCase):
             self.assertNotIn("self.flow_tabs",source)
             self.assertNotIn("self.tree",source)
         self.assertIn("self._run_ui_task",inspect.getsource(BackupTabMixin))
+
+
+    def test_profiles_controller_and_app_shell_size(self):
+        self.assertTrue(issubclass(App,ProfilesTabMixin))
+        self.assertIs(ProfileEditor,OwnedProfileEditor)
+        for handler in ("_build_profiles_tab","selected_id","refresh",
+                        "render_cached_profiles","new_profile","edit_profile",
+                        "clone_profile","open_profile","open_group",
+                        "delete_profile","update_profile_status",
+                        "profile_group_snapshot","cancel_profile_search"):
+            self.assertIn(handler,ProfilesTabMixin.__dict__)
+            self.assertNotIn(handler,App.__dict__)
+        source=inspect.getsource(App)
+        self.assertNotIn("self.tree",source)
+        self.assertNotIn("self._cached_profiles",source)
+        batch=inspect.getsource(BatchTabMixin)
+        self.assertIn("self.profile_group_snapshot",batch)
+        self.assertNotIn("self.group.",batch)
+        self.assertNotIn("self._cached_profiles",batch)
+        cloud=inspect.getsource(CloudTabMixin)
+        self.assertNotIn("self.builder",cloud)
+        self.assertNotIn("self.flow_tabs",cloud)
+        self.assertNotIn("self.graph_builder",cloud)
+        from pathlib import Path
+        self.assertLess(len(Path(inspect.getfile(App)).read_text(encoding="utf-8").splitlines()),600)
 
 
 
